@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING
 from sandbox_mcp.backends.base import Backend, TargetInfo
 from sandbox_mcp.config import get_work_dir, get_work_home
 from sandbox_mcp.config import load as _load_config
+from sandbox_mcp.shell_provider import ShellProvider, ShellProviderFactory
 from sandbox_mcp.shell_session import ShellSession
 
 if TYPE_CHECKING:
@@ -402,6 +403,7 @@ class DockerBackend(Backend):
         self._client = None  # lazy init
         self._started_at: dict[str, float] = {}
         self._shell: dict[str, str] = {}
+        self._provider: dict[str, ShellProvider] = {}
 
     def _ensure_client(self):
         """Return a cached DockerClient, building one on first use.
@@ -448,6 +450,20 @@ class DockerBackend(Backend):
                 self._ensure_client().networks.create(name, driver="bridge", check_duplicate=True)
         except docker.errors.APIError:
             pass  # daemon unreachable — not fatal (container run will fail later)
+
+    def _detect_container_os(self, name: str) -> str:
+        """Inspect the container image's ``Os`` field to determine the OS.
+
+        Returns ``"windows"`` or ``"linux"``.  Falls back to ``"linux"``
+        when the container or metadata cannot be read.
+        """
+        try:
+            container = self._ensure_client().containers.get(name)
+            img_attrs = container.image.attrs or {}
+            os_field = (img_attrs.get("Os") or "").lower()
+            return "windows" if os_field == "windows" else "linux"
+        except Exception:
+            return "linux"
 
     def create(self, name: str, purpose: str = "", **kwargs) -> TargetInfo:
         docker_cfg = _load_config().docker
@@ -588,7 +604,14 @@ class DockerBackend(Backend):
             )
 
         self._started_at[name] = time.time()
-        self._shell[name] = kwargs.get("shell", "bash")
+        os_type = kwargs.get("os_type", "")
+        if not os_type:
+            os_type = self._detect_container_os(name)
+        self._provider[name] = ShellProviderFactory.create(os_type)
+        self._shell[name] = kwargs.get(
+            "shell",
+            "powershell.exe" if os_type == "windows" else "bash",
+        )
         # ``created`` is filled in lazily by ``get_info`` (it queries the
         # daemon for accurate timestamps).  Mark the machine as running
         # so the dispatcher can surface it in ``docker_ps`` immediately.
@@ -1301,8 +1324,11 @@ class DockerBackend(Backend):
             container = self._ensure_client().containers.get(name)
         except docker.errors.NotFound as e:
             raise RuntimeError(f"Container {name} not found") from e
-        process = DockerExecProcess(container, [self._shell.get(name, "bash")])
-        return ShellSession(process=process)
+        provider = self._provider.get(name)
+        if provider is None:
+            provider = ShellProviderFactory.create("linux")
+        process = DockerExecProcess(container, list(provider.default_shell_args))
+        return ShellSession(process=process, provider=provider)
 
     def exec_oneoff(self, name: str, command: str, timeout: int = 30) -> dict:
         docker = _docker_module()
@@ -1310,9 +1336,12 @@ class DockerBackend(Backend):
             container = self._ensure_client().containers.get(name)
         except docker.errors.NotFound:
             return {"exit_code": -1, "output": "", "stderr": "container not found"}
+        provider = self._provider.get(name)
+        if provider is None:
+            provider = ShellProviderFactory.create("linux")
         try:
             exit_code, output = container.exec_run(
-                cmd=[self._shell.get(name, "bash"), "-c", command],
+                cmd=[*provider.default_shell_args, command],
                 stdout=True,
                 stderr=True,
                 demux=False,
@@ -1334,14 +1363,16 @@ class DockerBackend(Backend):
         except docker.errors.NotFound:
             return {"status": "error", "error": "container not found"}
 
+        provider = self._provider.get(name)
+        if provider is None:
+            provider = ShellProviderFactory.create("linux")
+
         parent = os.path.dirname(path) or "/"
-        # Combine the parent + tmp_dir mkdirs into one round-trip.  Skip
-        # the parent mkdir entirely when target is at filesystem root.
         tmp_dir = f"{_load_config().docker.write_tmp_prefix}{uuid.uuid4().hex[:8]}"
         if parent != "/":
             mkdir_both = self.exec_oneoff(
                 name,
-                f"mkdir -p {shlex.quote(parent)} {shlex.quote(tmp_dir)}",
+                f"{provider.mkdir_command(parent)}; {provider.mkdir_command(tmp_dir)}",
             )
             if mkdir_both.get("exit_code") not in (0, None):
                 return {
@@ -1350,7 +1381,7 @@ class DockerBackend(Backend):
                     "error": mkdir_both.get("stderr") or "mkdir failed",
                 }
         else:
-            mkdir_tmp = self.exec_oneoff(name, f"mkdir -p {shlex.quote(tmp_dir)}")
+            mkdir_tmp = self.exec_oneoff(name, provider.mkdir_command(tmp_dir))
             if mkdir_tmp.get("exit_code") not in (0, None):
                 return {
                     "status": "error",
@@ -1379,9 +1410,6 @@ class DockerBackend(Backend):
                 "error": "put_archive returned False",
             }
 
-        # Single round-trip for the atomic rename + cleanup: capture mv's
-        # exit code, then rm -rf the (now-empty) tmp dir, then return mv's
-        # exit code so the caller still sees the rename status.
         rename = self.exec_oneoff(
             name,
             "ec=0; "
