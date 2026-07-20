@@ -45,8 +45,7 @@ Hermes Gateway (host process)
                     │         docker_stop / docker_start / docker_remove
                     │         docker_ps / docker_images
                     └── action=ssh_help
-                          └── ssh_connect / ssh_disconnect / ssh_reconnect
-                              ssh_remove
+                          └── ssh_connect / ssh_close
 ```
 
 ## Three-Layer Tool Exposure
@@ -91,8 +90,7 @@ called through the same tool.
 
 - `sandbox_env(action="docker_help")`: docker_run, docker_build, docker_commit,
   docker_stop, docker_start, docker_remove
-- `sandbox_env(action="ssh_help")`: ssh_connect, ssh_disconnect, ssh_reconnect,
-  ssh_remove
+- `sandbox_env(action="ssh_help")`: ssh_connect, ssh_close
 
 Agent only loads the backend help it needs. A Docker-only agent never loads
 SSH docs.
@@ -418,7 +416,7 @@ docker_stop / docker_start / docker_remove / docker_ps / docker_images
 Returns SSH operations with required/optional params, returns, and examples:
 
 ```
-ssh_connect / ssh_disconnect / ssh_reconnect / ssh_remove
+ssh_connect / ssh_close
 ```
 
 ### Backend-specialized lifecycle operations
@@ -427,10 +425,10 @@ v1 had generic `stop`/`start`/`remove` that dispatched by backend. v2
 specializes them:
 
 | v1 (generic) | v2 Docker | v2 SSH | Semantic difference |
-|---|---|---|---|
-| stop | docker_stop | ssh_disconnect | Container stops vs connection closes |
-| start | docker_start | ssh_reconnect | Container restarts vs connection re-establishes |
-| remove | docker_remove | ssh_remove | Container destroyed vs machine unregistered |
+|---|---|---|---|---|
+| stop | docker_stop | — | Container stops; SSH has no "stopped" state |
+| start | docker_start | — | Container restarts; SSH auto-reconnects on demand |
+| remove | docker_remove | ssh_close | Container destroyed vs connection closed + unregistered |
 
 Action name itself indicates the backend and behavior. No dispatch ambiguity.
 Error messages can be specific: "docker_stop only works on Docker machines".
