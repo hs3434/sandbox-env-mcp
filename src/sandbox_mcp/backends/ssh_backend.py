@@ -249,12 +249,41 @@ class SSHBackend(Backend):
 
     def open_shell(self, name):
         self._ensure_alive(name)
+        dead = self._check_alive(name)
+        if dead:
+            raise RuntimeError(dead["hint"])
         provider = self._provider.get(name, ShellProviderFactory.create("linux"))
         shell_args = [*self._ssh_base_args(name), *provider.default_shell_args]
         return ShellSession(shell_args, provider=provider)
 
+    def _check_alive(self, name):
+        """Return None if alive, or an error dict with guidance if dead."""
+        target = self._targets.get(name)
+        if target is None:
+            return {"exit_code": -1, "output": "", "stderr": "unknown machine", "error_kind": "ssh_disconnected",
+                    "hint": "Use connect(name) to reconnect."}
+        socket = self._socket_path(name)
+        user = target.get("user", "")
+        host = target.get("host", "")
+        try:
+            check = subprocess.run(
+                [self._ssh, "-S", socket, "-O", "check", f"{user}@{host}"],
+                capture_output=True, timeout=10,
+            )
+            if check.returncode == 0:
+                return None
+        except Exception:
+            pass
+        return {"exit_code": -1, "output": "", "stderr": "SSH connection lost",
+                "error_kind": "ssh_disconnected",
+                "hint": "Connection dropped. Run connect(name) to reconnect, "
+                        "then shell_remove to clean up stale shells."}
+
     def exec_oneoff(self, name, command, timeout=30):
         self._ensure_alive(name)
+        dead = self._check_alive(name)
+        if dead:
+            return dead
         provider = self._provider.get(name, ShellProviderFactory.create("linux"))
         try:
             result = subprocess.run(
