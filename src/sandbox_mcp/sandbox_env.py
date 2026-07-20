@@ -59,58 +59,12 @@ HELP_RESPONSE = {
             ),
             "example": {},
         },
-        {
-            "action": "machine_list",
-            "summary": "List all registered machines.",
-            "description": (
-                "List all registered machines with backend, status, "
-                "purpose, shell count, and uptime. Lighter than status "
-                "(no shell details)."
-            ),
-            "example": {},
-        },
-        {
-            "action": "default_set",
-            "summary": "Set the default machine (machine=X) or default shell (shell_id=X).",
-            "description": (
-                "Set default machine or default shell. Pass machine to set "
-                "the default machine. Pass shell_id to set that shell as "
-                "its machine's default shell."
-            ),
-            "optional": {"machine": "string", "shell_id": "string"},
-            "requires": "Exactly one of machine or shell_id",
-            "example": {"machine": "dev"},
-        },
-        {
-            "action": "shell_new",
-            "summary": "Create an additional shell session on a machine.",
-            "description": "Create an additional shell session on a machine.",
-            "optional": {"machine": "string", "purpose": "string"},
-        },
-        {
-            "action": "shell_remove",
-            "summary": "Terminate and remove a shell session.",
-            "description": (
-                "Terminate and remove a shell session. If already "
-                "terminated, remove the registry entry."
-            ),
-            "required": {"shell_id": "string"},
-        },
-        {
-            "action": "shell_list",
-            "summary": "List all shells, optionally filtered by machine.",
-            "description": "List all shells, optionally filtered by machine.",
-            "optional": {"machine": "string"},
-        },
     ],
     "note": (
-        "Core tools are exposed directly: sandbox_shell_exec runs commands "
-        "in the machine's persistent session — equivalent to "
-        "`docker exec -it <container> bash` on Docker machines and "
-        "`ssh <host>` on SSH machines. sandbox_shell_read for non-blocking "
-        "output, sandbox_file_read/write/patch/search for files. "
-        "Management actions (shell_new, shell_remove, shell_list, "
-        "machine_list, default_set) are also top-level tools. "
+        "Core tools are exposed directly as top-level tools: "
+        "shell_exec, shell_read, shell_new, shell_list, shell_remove, "
+        "file_read, file_write, file_patch, file_search, "
+        "machine_list, default_set. "
         "All tools target the default machine unless a [machine] param is "
         "passed. For full action docs call "
         'env(action="help", topic="<action>").'
