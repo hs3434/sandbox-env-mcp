@@ -899,7 +899,7 @@ class SandboxEnv:
             if info.error:
                 result["error"] = info.error
             if info.status == "running":
-                self.shells.get_or_create_default(name, lambda: self._ssh.open_shell(name))
+                self._shells.get_or_create_default(name, lambda: self._ssh.open_shell(name))
             return result
 
         target = cfg.winrm.targets.get(name)
