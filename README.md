@@ -577,24 +577,18 @@ sandbox-mcp supports three ways to run Windows environments:
 
 ### 1. SSH to remote Windows
 
-Connect to any Windows machine with OpenSSH Server installed:
+Connect to any Windows machine with OpenSSH Server installed.
+See [Windows SSH 配置指南](docs/windows-ssh-guide.md) for detailed setup.
 
-```python
-sandbox_env(action="ssh_connect", params={
-    "name": "win-build",
-    "host": "192.168.1.100",
-    "user": "builder",
-    "os_type": "windows",
-    "shell": "powershell.exe",
-})
-```
-
-The backend auto-reconnects if the SSH connection drops.  Pre-define targets
-in config:
+Pre-define targets in config:
 
 ```toml
 [ssh.targets]
-win-build = { host = "192.168.1.100", user = "builder", os_type = "windows", shell = "powershell.exe" }
+win-build = { host = "10.100.1.1", user = "builder", os_type = "windows", shell = "powershell.exe", key = "/home/sandbox/.sandbox-mcp/windows_rsa" }
+```
+
+```python
+connect(name="win-build")
 ```
 
 ### 2. WinRM / PowerShell Remoting
