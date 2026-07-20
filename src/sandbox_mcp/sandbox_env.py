@@ -61,10 +61,12 @@ HELP_RESPONSE = {
         },
     ],
     "note": (
-        "Core tools are exposed directly as top-level tools: "
-        "shell_exec, shell_read, shell_new, shell_list, shell_remove, "
-        "file_read, file_write, file_patch, file_search, "
-        "machine_list, default_set. "
+        "Core tools are exposed directly as top-level tools. "
+        "sandbox_shell_exec runs commands in the target machine's persistent "
+        "shell — equivalent to ``docker exec -it <container> bash`` on Docker "
+        "machines and ``ssh <host>`` on SSH machines. "
+        "sandbox_file_read/write/patch/search operate on the target machine's "
+        "filesystem through the same remote-execution proxy. "
         "All tools target the default machine unless a [machine] param is "
         "passed. For full action docs call "
         'env(action="help", topic="<action>").'
