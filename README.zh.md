@@ -3,16 +3,17 @@
 <!-- mcp-name: io.github.hs3434/sandbox-env-mcp -->
 
 一个提供持久化沙箱环境管理的 MCP（Model Context Protocol）服务器。
-为 AI agent 管理 Docker 容器和 SSH 机器作为执行目标，支持基于 shell 的命令执行和完整的文件操作能力。
+为 AI agent 管理 Docker 容器、SSH 机器和 WinRM 远程 Windows 机器作为执行目标，
+支持基于 shell 的命令执行和完整的文件操作能力。
 
 设计用来替代 Hermes Agent 内置的 terminal / file / code_execution 工具，
 在内置工具基础上增加持久化的环境管理能力。
 
 ## 特性
 
-- **简洁的 MCP 接口**：只暴露 7 个工具，通过 `sandbox_env` 渐进式发现管理能力
-- **双传输**：stdio（Hermes 子进程）或 HTTP（独立服务）
-- **多 backend**：Docker 容器（SDK，支持远程 daemon）+ SSH 远程机器
+- **简洁的 MCP 接口**：13 个顶层工具，通过 `sandbox_env` 渐进式发现管理能力
+- **双传输**：stdio 或 HTTP（streamable-http）
+- **多 backend**：Docker 容器（SDK）+ SSH 远程机器 + WinRM 远程 Windows
 - **持久化机器**：Docker 容器在 MCP 重启后依然存在，可用 `docker_ps` 发现
 - **Shell 执行**：双 marker 确认机制，长时间运行的命令可用 `read` 读后续输出
 - **完整文件操作**：读、写（原子）、patch（模糊匹配）、搜索（ripgrep / glob）
@@ -102,11 +103,12 @@ restart_max_retry_count = 3
 connect_timeout = 10
 socket_dir_prefix = "sandbox-mcp-ssh-"
 tmpfile_pattern = ".sandbox-mcp-tmp.XXXXXX"
-# [default_machine] backend = "ssh" 时使用的默认 SSH 目标：
-default_host = ""
-default_user = ""
-default_port = 22
-default_key = ""
+
+# [ssh.targets.{name}] 是 [default_machine] backend="ssh" 时查找的目标。
+# 目标以内联表形式定义：
+#   [ssh.targets]
+#   my-box = { host = "10.0.0.5", user = "ubuntu" }
+#   win-build = { host = "192.168.1.100", user = "builder", os_type = "windows", shell = "powershell.exe" }
 
 [shell]
 default_max_output = 50000
@@ -120,10 +122,10 @@ max_read_limit = 2000
 default_search_limit = 50
 
 [default_machine]       # 可选：启动时自动准备一个默认 machine
-enabled = false         # false = 懒加载（agent 自己创建首个 machine）
-backend = "docker"      # "docker" 或 "ssh"
-name = "admin"          # 默认 "admin" -> 触发 admin mount 布局
-purpose = ""            # 后端参数在 [docker] / [ssh] 里，不在这里
+enabled = false         # false = 懒加载
+backend = "docker"      # "docker"、"ssh" 或 "winrm"
+name = "admin"          # 连接参数按 name 查找（targets / image）
+purpose = ""            # 详见 config.example.toml
 ```
 
 每个值都能用环境变量覆盖（大写、点 → 下划线）：
@@ -140,7 +142,7 @@ SANDBOX_MCP_AUDIT_LOG_PATH=/var/log/sandbox-mcp/audit.db sandbox-mcp
 
 ### 启动时准备默认 machine
 
-默认情况下 sandbox-mcp 是**懒加载**的：agent 用 `docker_run` / `ssh_connect`
+默认情况下 sandbox-mcp 是**懒加载**的：agent 用 `docker_run` / `connect`
 按需创建首个 machine，在此之前没有默认 machine。设置
 `[default_machine] enabled = true` 可在启动时直接准备一个默认 machine，
 这样 agent 一上来就能用 `sandbox_shell_exec` / `sandbox_file_*`：
@@ -148,16 +150,13 @@ SANDBOX_MCP_AUDIT_LOG_PATH=/var/log/sandbox-mcp/audit.db sandbox-mcp
 ```toml
 [default_machine]
 enabled = true
-backend = "docker"     # 或 "ssh"
+backend = "docker"     # 或 "ssh"、"winrm"
 name = "dev"
 # docker 在这里不需要别的，镜像用 [docker] default_image。
 
-# SSH 的话，目标写在 [ssh] 下（后端参数在各自段落，不放 [default_machine]）：
-# [ssh]
-# default_host = "10.0.0.5"
-# default_user = "ubuntu"
-# default_port = 22
-# default_key = "/home/ubuntu/.ssh/id_ed25519"
+# SSH 的话，目标在 [ssh.targets.{name}] 里定义：
+# [ssh.targets]
+# dev = { host = "10.0.0.5", user = "ubuntu" }
 ```
 
 行为：
@@ -240,21 +239,25 @@ Hermes 连到 HTTP MCP 端点（`/mcp`，即 MCP 规范当前的 "Streamable HTT
 | `sandbox_file_write` | 写文件（自动 mkdir、语法检查、原子写） |
 | `sandbox_file_patch` | 模糊匹配的定向编辑 |
 | `sandbox_file_search` | ripgrep 内容搜索 + glob 文件搜索 |
-| `sandbox_env` | 渐进式发现：`default_set`, `shell_*`, `docker_*`, `ssh_*` |
-| `sandbox_audit_query` | 读取审计日志（过滤 + 分页）—— 仅当 `[audit] log_path` 非空时暴露 |
+| `sandbox_env` | 渐进式发现管理动作 |
+| `sandbox_shell_new` | 创建额外 shell |
+| `sandbox_shell_remove` | 删除 shell |
+| `sandbox_shell_list` | 列出所有 shell |
+| `sandbox_machine_list` | 列出所有已注册的机器 |
+| `sandbox_default_set` | 设置默认 machine / shell |
+| `sandbox_audit_query` | 读取审计日志 |
 
 ## sandbox_env 操作
 
 `sandbox_env` 默认只暴露 `help` 和 `status`。
-调用 `action=help` 看完整列表，或 `action=docker_help` / `action=ssh_help` 看 backend 专属操作：
+调用 `action=help` 发现全部操作，包括 Docker、SSH 和 WinRM 后端动作。
+用 `action=list_targets` 查看预定义的 SSH/WinRM 目标。
 
 | 命名空间 | 操作 |
 |---|---|
-| Discovery | `help`, `status` |
-| General | `machine_list`, `default_set` |
-| Shell | `shell_new`, `shell_list`, `shell_remove` |
+| 发现 | `help`, `status`, `list_targets` |
 | Docker | `docker_run`, `docker_build`, `docker_commit`, `docker_stop`, `docker_start`, `docker_remove`, `docker_restart`, `docker_ps`, `docker_images`, `docker_image_history`, `docker_inspect`, `docker_logs`, `docker_diff`, `docker_stats` |
-| SSH | `ssh_connect`, `ssh_disconnect`, `ssh_reconnect`, `ssh_remove` |
+| 远程目标 | `connect(name)`, `close(name)` |
 
 `docker_run` 是幂等的：如果同名容器已经存在（比如 MCP 重启后），
 会重新挂载而不是失败。
@@ -527,9 +530,56 @@ Pass it as: Authorization: Bearer <token>
 
 拷贝这个 token 给当前 session 用。server 重启后不会重复生成同一个（文件还在会读文件）。
 
+## Windows 支持
+
+sandbox-mcp 支持三种方式运行 Windows 环境：
+
+### 1. SSH 连接远程 Windows
+
+连接任何安装了 OpenSSH Server 的 Windows 机器。
+详细配置见 [Windows SSH 配置指南](https://github.com/hs3434/sandbox-env-mcp/blob/main/docs/windows-ssh-guide.md)。
+
+```toml
+[ssh.targets]
+win-build = { host = "10.100.1.1", user = "builder", os_type = "windows", shell = "powershell.exe", key = "/home/sandbox/.sandbox-mcp/windows_rsa" }
+```
+
+```python
+connect(name="win-build")
+```
+
+### 2. WinRM / PowerShell Remoting
+
+用于企业 Windows 环境：
+
+```python
+env(action="winrm_connect", params={
+    name: "win-server",
+    host: "windows-prod.contoso.com",
+    user: "CONTOSO\\builder",
+    password: "...",
+})
+```
+
+需要 `pip install sandbox-mcp[winrm]`（添加 `pywinrm`）。
+
+### 3. Docker Windows 容器
+
+当 sandbox-mcp 运行在 Windows 宿主机且 Docker Desktop 处于 Windows 容器模式时：
+
+```python
+env(action="docker_run", params={
+    name: "winbox",
+    image: "mcr.microsoft.com/windows/servercore:ltsc2022",
+    os_type: "windows",
+})
+```
+
+后端通过镜像元数据的 `Os` 字段自动检测 Windows 镜像，并选用 PowerShell 作为默认 shell。
+
 ## 限制
 
-- **SSH backend 只支持 key 认证**。当前版本不支持密码认证。
+- **SSH/WinRM 后端只支持 key / 集成认证**。
 - **没有 PTY / 交互式 stdin**。命令非交互运行。需要 TTY 的命令（vim、ssh 密码提示）不支持。
 - **状态在内存里**。Shell session 服务端重启后丢失，重新 `shell_new`。容器能跨重启存活，重新 `docker_run` 挂载，或 `docker_ps` 查看。
 - **Shell 死后会自动重启**。Agent 跑 `exit`（或 bash 因其他原因挂掉）后，下一次 `shell_exec` 会透明地跑在一个新的 bash 里。响应里带 `bash_pid` 字段 —— agent 跨调用跟踪它，变了说明 shell 重启过，内存里所有状态（exports、cwd、后台任务）都没了。需要跨重启保留的状态请存文件，不要靠环境变量。
@@ -561,12 +611,12 @@ sandbox-mcp                     sandbox-mcp-http
   │ AuditLogger / Safety  │
   └──────────┬───────────┘
              │
-     ┌───────┴───────┐
-     ▼               ▼
-  Docker SDK      SSH (subprocess)
-  (put_archive,    (ControlMaster,
-   exec_run,        exec_oneoff,
-   exec socket)     stdin pipe)
+      ┌───────┴───────┬──────────────┐
+      ▼               ▼              ▼
+   Docker SDK      SSH          WinRM (可选)
+   (put_archive,   (ControlMaster, pywinrm,
+    exec_run,       exec_oneoff,   run_ps,
+    exec socket)    stdin pipe)    base64 写)
 ```
 
 ## 设计
