@@ -316,11 +316,16 @@ class SSHBackend(Backend):
         if parent != "/":
             mkdir = self.exec_oneoff(name, provider.mkdir_command(parent))
             if mkdir.get("exit_code") not in (0, None):
-                return {
+                result = {
                     "status": "error",
                     "stage": "mkdir",
                     "error": mkdir.get("stderr") or "mkdir failed",
                 }
+                if mkdir.get("error_kind"):
+                    result["error_kind"] = mkdir["error_kind"]
+                if mkdir.get("hint"):
+                    result["hint"] = mkdir["hint"]
+                return result
 
         script = provider.atomic_write_script(path)
         try:

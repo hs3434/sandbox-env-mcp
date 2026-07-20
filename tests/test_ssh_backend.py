@@ -123,7 +123,9 @@ def test_ssh_write_file_streams_content_via_stdin(ssh_backend):
     assert "mv -f" in cmd
 
 
-def test_ssh_write_file_propagates_error(ssh_backend):
+def test_ssh_write_file_stale_connection_returns_guidance(ssh_backend):
+    """When the ControlMaster socket is stale, guidance is returned instead
+    of proceeding to the write attempt."""
     ssh_backend._targets["remote"] = {
         "host": "h",
         "user": "u",
@@ -137,5 +139,5 @@ def test_ssh_write_file_propagates_error(ssh_backend):
             stderr="permission denied",
         )
         result = ssh_backend.write_file("remote", "/tmp/x.txt", b"hi")
-    assert result["status"] == "error"
-    assert "permission denied" in result["error"]
+    assert result.get("error_kind") == "ssh_disconnected"
+    assert "connect" in result.get("hint", "").lower()
