@@ -10,7 +10,8 @@ ARG PIP_EXTRA_ARGS=""
 WORKDIR /app
 COPY pyproject.toml LICENSE ./
 COPY src/ ./src/
-RUN pip install --no-cache-dir ${PIP_EXTRA_ARGS} .
+# Install with all optional dependencies (WinRM support, etc.)
+RUN pip install --no-cache-dir ${PIP_EXTRA_ARGS} ".[winrm]"
 
 # HOME must match the config volume mount target in docker-compose.yml.
 # sandbox-mcp resolves config via Path.home() / ".sandbox-mcp".
