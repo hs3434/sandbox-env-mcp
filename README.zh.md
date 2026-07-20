@@ -75,7 +75,7 @@ sandbox-mcp 按以下优先级读配置（从高到低）：
 3. **配置文件** —— 默认 `~/.sandbox-mcp/config.toml`，可用 `--config PATH` 或 `SANDBOX_MCP_CONFIG` 覆盖
 4. **内置默认值**（在 `src/sandbox_mcp/config.py` 里声明）
 
-要自定义，把 [`config/config.example.toml`](config/config.example.toml) 拷贝到
+要自定义，把 [`config/config.example.toml`](https://github.com/hs3434/sandbox-env-mcp/blob/main/config/config.example.toml) 拷贝到
 `~/.sandbox-mcp/config.toml` 后改需要的字段。保持默认就什么都不用做。
 
 主要配置项：
@@ -473,7 +473,7 @@ cert_path = "/etc/sandbox-mcp/docker-certs"
 ```
 
 URL 协议头(`unix://` / `tcp://` / `ssh://`)决定传输方式。
-完整选项见 [`config/config.example.toml`](config/config.example.toml)。
+完整选项见 [`config/config.example.toml`](https://github.com/hs3434/sandbox-env-mcp/blob/main/config/config.example.toml)。
 
 ## HTTP 鉴权
 
@@ -571,8 +571,8 @@ sandbox-mcp                     sandbox-mcp-http
 
 ## 设计
 
-设计规格见 [docs/design-spec-v2.md](docs/design-spec-v2.md)。
-TDD 实现计划见 [docs/implementation-plan.md](docs/implementation-plan.md)。
+设计规格见 [docs/design-spec-v2.md](https://github.com/hs3434/sandbox-env-mcp/blob/main/docs/design-spec-v2.md)。
+TDD 实现计划见 [docs/implementation-plan.md](https://github.com/hs3434/sandbox-env-mcp/blob/main/docs/implementation-plan.md)。
 
 ## 贡献
 
