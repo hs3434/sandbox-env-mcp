@@ -35,12 +35,15 @@ import re
 import select
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
 from collections import deque
 
 from sandbox_mcp.config import load as _load_config
+from sandbox_mcp.shell_provider import ShellProvider
+from sandbox_mcp.shell_providers.bash_provider import BashShellProvider
 
 _MARKER_RE = re.compile(r"__(START|END)_[0-9a-f]+__(?::\d+)?")
 
@@ -71,7 +74,7 @@ def _health_check(session) -> None:
 class ShellSession:
     """A persistent shell (bash) process with drain-thread-based I/O."""
 
-    def __init__(self, args=None, process=None):
+    def __init__(self, args=None, process=None, provider=None):
         """Create a shell session.
 
         Either *args* (a ``subprocess.Popen`` argument list) or *process*
@@ -79,6 +82,9 @@ class ShellSession:
         ``.wait`` methods matching ``subprocess.Popen``) must be provided.
         The *process* form is used by backends that provide their own
         process-like handle (e.g. the Docker backend's SDK-based exec).
+
+        *provider* is a :class:`ShellProvider` used for dual-marker protocol
+        commands.  Defaults to bash-style ``echo`` markers.
         """
         shell_cfg = _load_config().shell
         self.HEAD_SIZE = shell_cfg.head_size
@@ -87,6 +93,7 @@ class ShellSession:
         self._args = args
         self._process = process
         self._external = process is not None
+        self._provider = provider or BashShellProvider()
         self._lock = threading.Lock()
         self._state = "idle"
         self._last_command = None
@@ -123,20 +130,24 @@ class ShellSession:
             self._drain_thread = threading.Thread(target=self._drain, daemon=True)
             self._drain_thread.start()
             return
-        self._process = subprocess.Popen(
-            self._args,
+        kwargs = dict(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             bufsize=0,
+        )
+        if sys.platform == "win32":
+            # CREATE_NEW_PROCESS_GROUP = 0x00000200
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
             # New process group + session so close() can killpg() the
             # whole tree.  Without this, a long-running child like
             # ``sleep 60`` inherits bash's stdout pipe FD and keeps it
             # open after bash is killed — the drain thread blocks on
             # readline waiting for EOF that never comes, and close()
             # hits its drain_thread.join(timeout=2) every time.
-            start_new_session=True,
-        )
+            kwargs["start_new_session"] = True
+        self._process = subprocess.Popen(self._args, **kwargs)
         self._state = "idle"
         self._drain_thread = threading.Thread(target=self._drain, daemon=True)
         self._drain_thread.start()
@@ -299,7 +310,9 @@ class ShellSession:
             marker = uuid.uuid4().hex
             start_marker = f"__START_{marker}__"
             end_marker = f"__END_{marker}__"
-            full_input = f"echo {start_marker}\n{command}\necho {end_marker}:$?\n"
+            start_cmd = self._provider.marker_start_command(marker)
+            end_cmd = self._provider.marker_end_command(marker)
+            full_input = f"{start_cmd}\n{command}\n{end_cmd}\n"
 
             self._pending_start_marker = start_marker
             self._pending_end_marker = end_marker
@@ -411,19 +424,20 @@ class ShellSession:
         with self._lock:
             self._state = "terminated"
         if self._process:
-            # Kill the whole process group (bash + any descendants like
-            # ``sleep 60``) so the stdout pipe closes immediately.  Falls
-            # back to direct kill for externally-provided processes
-            # (e.g. Docker exec fds) that don't own a process group.
             try:
-                if hasattr(self._process, "pid") and self._process.pid is not None:
+                if sys.platform == "win32":
+                    # Windows: no process groups; use TerminateProcess.
+                    self._process.kill()
+                elif hasattr(self._process, "pid") and self._process.pid is not None:
+                    # Kill the whole process group (bash + any descendants
+                    # like ``sleep 60``) so the stdout pipe closes
+                    # immediately.
                     pgid = os.getpgid(self._process.pid)
                     os.killpg(pgid, signal.SIGKILL)
                 else:
                     self._process.kill()
                 self._process.wait(timeout=5)
             except (ProcessLookupError, PermissionError):
-                # Already gone or not our group — try plain kill.
                 with contextlib.suppress(Exception):
                     self._process.kill()
                 with contextlib.suppress(Exception):
