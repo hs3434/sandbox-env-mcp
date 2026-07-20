@@ -37,12 +37,9 @@ def test_help_returns_operations_and_pointers(sandbox_env):
     assert default_actions == ["help", "status"]
     assert "operations" in result
     actions = [op["action"] for op in result["operations"]]
-    assert "machine_list" in actions
-    assert "default_set" in actions
-    assert "shell_new" in actions
-    assert "shell_remove" in actions
-    assert "shell_list" in actions
+    assert "list_targets" in actions
     assert "docker_run" in actions
+    # connect/close only appear when [ssh.targets] or [winrm.targets] have entries
     assert "docker_build" in actions
     assert "docker_ps" in actions
 

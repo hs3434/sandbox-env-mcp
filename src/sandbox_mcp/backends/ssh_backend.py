@@ -85,7 +85,8 @@ class SSHBackend(Backend):
         except Exception:
             pass
 
-        # Stale — reconnect transparently.
+        # Stale — try reconnect.  Machine stays registered regardless
+        # of outcome so the agent can see the "disconnected" status.
         keys = {"host", "user", "port", "key", "os_type"}
         self.create(name, **{k: v for k, v in target.items() if k in keys})
 
@@ -215,19 +216,36 @@ class SSHBackend(Backend):
         target = self._targets.get(name)
         if not target:
             return TargetInfo(name=name, backend="ssh", status="error")
+        socket = self._socket_path(name)
+        user = target.get("user", "")
+        host = target.get("host", "")
+
+        # Check if the ControlMaster socket is still alive.
         try:
-            result = subprocess.run(
-                [*self._ssh_base_args(name), "true"],
+            check = subprocess.run(
+                [self._ssh, "-S", socket, "-O", "check", f"{user}@{host}"],
                 capture_output=True,
-                text=True,
                 timeout=10,
             )
-            status = "running" if result.returncode == 0 else "error"
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            status = "error"
-        return TargetInfo(
-            name=name, backend="ssh", status=status, purpose=target.get("purpose", "")
-        )
+            if check.returncode == 0:
+                return TargetInfo(
+                    name=name, backend="ssh", status="running",
+                    purpose=target.get("purpose", ""),
+                )
+            # Socket exists but is stale -> connection dropped.
+            return TargetInfo(
+                name=name, backend="ssh", status="disconnected",
+                purpose=target.get("purpose", ""),
+                error="SSH connection dropped. Next operation will auto-reconnect.",
+            )
+        except FileNotFoundError:
+            return TargetInfo(name=name, backend="ssh", status="error",
+                              purpose=target.get("purpose", ""),
+                              error="ssh binary not found")
+        except subprocess.TimeoutExpired:
+            return TargetInfo(name=name, backend="ssh", status="disconnected",
+                              purpose=target.get("purpose", ""),
+                              error="SSH socket check timed out")
 
     def open_shell(self, name):
         self._ensure_alive(name)
