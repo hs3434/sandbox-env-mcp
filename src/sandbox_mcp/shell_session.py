@@ -152,12 +152,10 @@ class ShellSession:
         self._state = "idle"
         self._drain_thread = threading.Thread(target=self._drain, daemon=True)
         self._drain_thread.start()
-        # Run provider-specific one-time setup (e.g. set UTF-8 encoding
-        # for PowerShell 5.1 so output isn't corrupted as UTF-16LE).
         setup = self._provider.setup_command
         if setup:
             try:
-                self._process.stdin.write(f"{setup}\n".encode())
+                self._process.stdin.write(f"{setup}\n".encode("utf-8"))
                 self._process.stdin.flush()
             except (BrokenPipeError, OSError):
                 pass
@@ -341,7 +339,8 @@ class ShellSession:
                 self._state = "running"
 
             try:
-                self._process.stdin.write(full_input.encode())
+                enc = self._provider.input_encoding
+                self._process.stdin.write(full_input.encode(enc))
                 self._process.stdin.flush()
             except (BrokenPipeError, OSError):
                 self._state = "terminated"
@@ -406,18 +405,27 @@ class ShellSession:
 
     @staticmethod
     def _decode_bytes(data: bytes) -> str:
-        """Decode bytes, re-decoding as UTF-16LE if UTF-8 produces nulls.
+        """Decode bytes, handling PowerShell encoding quirks.
 
-        PowerShell 5.1 outputs UTF-16LE over SSH pipes, which naive
-        UTF-8 decoding renders as interleaved ``\\u0000`` bytes.
+        1. UTF-16LE: naive UTF-8 decoding produces interleaved ``\\x00``.
+        2. GBK/ANSI: external programs output ANSI bytes (e.g. GBK on
+           Chinese Windows) which UTF-8 decoding renders as garbled CJK
+           characters.
         """
         text = data.decode("utf-8", errors="replace")
-        if "\x00" not in text:
-            return text
-        try:
-            return data.decode("utf-16-le", errors="replace").strip("\x00")
-        except Exception:
-            return text
+        if "\x00" in text:
+            try:
+                return data.decode("utf-16-le", errors="replace").strip("\x00")
+            except Exception:
+                pass
+        if "\ufffd" in text:
+            try:
+                decoded = data.decode("gbk", errors="replace")
+                if decoded.count("\ufffd") < text.count("\ufffd"):
+                    return decoded
+            except Exception:
+                pass
+        return text
 
     def _get_buffered_output(self, max_output):
         """Get buffered output, truncating if necessary."""

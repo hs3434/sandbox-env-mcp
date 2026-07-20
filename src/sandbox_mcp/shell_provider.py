@@ -36,6 +36,14 @@ class ShellProvider(ABC):
         '-Command' for PowerShell."""
 
     @property
+    def input_encoding(self) -> str:
+        """Encoding used when writing commands to this shell's stdin.
+        Bash reads UTF-8; Windows PowerShell reads the system's active
+        code page (GBK on Chinese Windows, etc.).
+        """
+        return "utf-8"
+
+    @property
     def setup_command(self) -> str:
         """Command to run once at shell startup before any user command.
 

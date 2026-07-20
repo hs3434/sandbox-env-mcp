@@ -26,10 +26,18 @@ class PowerShellProvider(ShellProvider):
         return "-Command"
 
     @property
+    def input_encoding(self) -> str:
+        return "gbk"
+
+    @property
     def setup_command(self) -> str:
         return (
+            "chcp 65001 | Out-Null; "
+            "[Console]::InputEncoding = [Text.Encoding]::UTF8; "
             "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
             "$OutputEncoding = [Text.Encoding]::UTF8; "
+            "$env:PYTHONIOENCODING='utf-8'; "
+            "$env:PYTHONUTF8='1'; "
             "$PSDefaultParameterValues['*:Encoding']='utf8'"
         )
 

@@ -40,19 +40,37 @@ def _find_ssh():
 
 
 def _decode_powershell_output(text: str) -> str:
-    """Detect UTF-16LE output from PowerShell 5.1 and re-decode.
+    """Detect and fix encoding issues in PowerShell output.
 
-    PowerShell 5.1 on Windows outputs UTF-16LE when piped through SSH,
-    which ``subprocess`` (decoding as UTF-8) renders as interleaved null
-    bytes.  This function detects the pattern and re-decodes correctly.
+    PowerShell 5.1 has two common encoding problems over SSH:
+
+    1. **UTF-16LE**: When piped through SSH, PowerShell outputs UTF-16LE
+       which ``subprocess`` (decoding as UTF-8) renders as interleaved
+       ``\\x00`` bytes.
+
+    2. **ANSI/GBK**: When the system's active code page is not UTF-8
+       (Chinese Windows = GBK 936), external programs (Python, chcp, etc.)
+       output ANSI bytes that ``subprocess`` reads as UTF-8 and renders
+       as garbled CJK characters.
     """
-    if "\x00" not in text:
-        return text
-    try:
-        raw = text.encode("utf-8", errors="replace")
-        return raw.decode("utf-16-le", errors="replace").strip("\x00")
-    except Exception:
-        return text
+    if "\x00" in text:
+        try:
+            raw = text.encode("utf-8", errors="replace")
+            return raw.decode("utf-16-le", errors="replace").strip("\x00")
+        except Exception:
+            return text
+
+    # Try GBK/ANSI if it reduces replacement chars (GBK bytes misread as UTF-8).
+    if "\ufffd" in text:
+        try:
+            raw = text.encode("utf-8", errors="replace")
+            decoded = raw.decode("gbk", errors="replace")
+            if decoded.count("\ufffd") < text.count("\ufffd"):
+                return decoded
+        except Exception:
+            pass
+
+    return text
 
 
 class SSHBackend(Backend):
