@@ -26,8 +26,14 @@ class ShellProvider(ABC):
     @property
     @abstractmethod
     def default_shell_args(self) -> list[str]:
-        """Startup arguments for the shell, e.g. [] for bash or
-        ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command'] for PowerShell."""
+        """Startup arguments for the shell, e.g. ['bash'] or
+        ['powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive', '-Command']."""
+
+    @property
+    @abstractmethod
+    def exec_flag(self) -> str:
+        """Flag passed to the shell for one-off execution: '-c' for bash,
+        '-Command' for PowerShell."""
 
     # ---- File read ----
 

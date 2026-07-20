@@ -18,7 +18,11 @@ class PowerShellProvider(ShellProvider):
 
     @property
     def default_shell_args(self) -> list[str]:
-        return ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]
+        return ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]
+
+    @property
+    def exec_flag(self) -> str:
+        return "-Command"
 
     @staticmethod
     def _esc(path: str) -> str:

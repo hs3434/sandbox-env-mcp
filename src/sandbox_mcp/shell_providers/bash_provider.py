@@ -23,6 +23,10 @@ class BashShellProvider(ShellProvider):
     def default_shell_args(self) -> list[str]:
         return ["bash"]
 
+    @property
+    def exec_flag(self) -> str:
+        return "-c"
+
     # ---- File read ----
 
     def file_read_command(self, path: str, offset: int, limit: int,
