@@ -143,10 +143,16 @@ class SSHBackend(Backend):
 
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            return TargetInfo(name=name, backend="ssh", status="error", purpose=purpose)
+        except subprocess.TimeoutExpired:
+            return TargetInfo(name=name, backend="ssh", status="error", purpose=purpose,
+                              error=f"SSH connection to {user}@{host}:{port} timed out")
+        except FileNotFoundError:
+            return TargetInfo(name=name, backend="ssh", status="error", purpose=purpose,
+                              error="ssh binary not found on PATH")
         if result.returncode != 0:
-            return TargetInfo(name=name, backend="ssh", status="error", purpose=purpose)
+            err = result.stderr.strip() or f"ssh connection to {user}@{host}:{port} failed (exit {result.returncode})"
+            return TargetInfo(name=name, backend="ssh", status="error", purpose=purpose,
+                              error=err)
         self._targets[name] = {
             "host": host,
             "user": user,

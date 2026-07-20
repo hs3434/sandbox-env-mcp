@@ -553,6 +553,8 @@ class SandboxEnv:
                 "shells": self._shells.count_shells(machine=name),
                 "uptime": _format_uptime(self._machines.get_created_at(name)),
             }
+            if info.error:
+                entry["error"] = info.error
             _inject_admin_info(name, entry)
             machines.append(entry)
         return {"machines": machines}
@@ -569,6 +571,8 @@ class SandboxEnv:
                 "shells": self._shells.count_shells(machine=name),
                 "uptime": _format_uptime(self._machines.get_created_at(name)),
             }
+            if info.error:
+                entry["error"] = info.error
             _inject_admin_info(name, entry)
             machines.append(entry)
         return {
@@ -889,14 +893,20 @@ class SandboxEnv:
         target = cfg.ssh.targets.get(name)
         if target:
             info = self._machines.register(name, self._ssh, **target)
-            return {"name": info.name, "status": info.status, "backend": "ssh"}
+            result = {"name": info.name, "status": info.status, "backend": "ssh"}
+            if info.error:
+                result["error"] = info.error
+            return result
 
         target = cfg.winrm.targets.get(name)
         if target:
             if self._winrm is None:
                 return {"error": "WinRM backend not available (install pywinrm)"}
             info = self._machines.register(name, self._winrm, **target)
-            return {"name": info.name, "status": info.status, "backend": "winrm"}
+            result = {"name": info.name, "status": info.status, "backend": "winrm"}
+            if info.error:
+                result["error"] = info.error
+            return result
 
         return {"error": f"Unknown target: {name!r}. Use list_targets to see available machines."}
 
