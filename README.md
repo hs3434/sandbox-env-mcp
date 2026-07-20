@@ -80,7 +80,7 @@ sandbox-mcp reads config in this priority order (highest wins):
    `--config PATH` / `SANDBOX_MCP_CONFIG`
 4. **Built-in defaults** (declared in `src/sandbox_mcp/config.py`)
 
-To customize, copy [`config/config.example.toml`](config/config.example.toml) from the
+To customize, copy [`config/config.example.toml`](https://github.com/hs3434/sandbox-mcp/blob/main/config/config.example.toml) from the
 repo root to `~/.sandbox-mcp/config.toml` and edit what you need.
 Leaving it in place means all defaults are used.
 
@@ -512,7 +512,7 @@ cert_path = "/etc/sandbox-mcp/docker-certs"
 ```
 
 URL scheme (`unix://` / `tcp://` / `ssh://`) selects transport.  See
-[`config/config.example.toml`](config/config.example.toml) for all options.
+[`config/config.example.toml`](https://github.com/hs3434/sandbox-mcp/blob/main/config/config.example.toml) for all options.
 
 ## HTTP authentication
 
@@ -578,7 +578,7 @@ sandbox-mcp supports three ways to run Windows environments:
 ### 1. SSH to remote Windows
 
 Connect to any Windows machine with OpenSSH Server installed.
-See [Windows SSH 配置指南](docs/windows-ssh-guide.md) for detailed setup.
+See [Windows SSH 配置指南](https://github.com/hs3434/sandbox-mcp/blob/main/docs/windows-ssh-guide.md) for detailed setup.
 
 Pre-define targets in config:
 
@@ -673,8 +673,8 @@ sandbox-mcp                     sandbox-mcp-http
 
 ## Design
 
-See [docs/design-spec-v2.md](docs/design-spec-v2.md) for the current design specification.
-See [docs/implementation-plan.md](docs/implementation-plan.md) for the TDD implementation plan.
+See [docs/design-spec-v2.md](https://github.com/hs3434/sandbox-mcp/blob/main/docs/design-spec-v2.md) for the current design specification.
+See [docs/implementation-plan.md](https://github.com/hs3434/sandbox-mcp/blob/main/docs/implementation-plan.md) for the TDD implementation plan.
 
 ## License
 
