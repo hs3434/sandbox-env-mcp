@@ -46,10 +46,11 @@ import difflib
 import json as _json
 import os
 import re
-import shlex
 
 from sandbox_mcp.config import load as _load_config
 from sandbox_mcp.safety import check_path_safety
+from sandbox_mcp.shell_provider import ShellProvider
+from sandbox_mcp.shell_providers.bash_provider import BashShellProvider
 
 LINE_FMT = "{n}|{line}"
 
@@ -285,8 +286,9 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
 class FileOperations:
     """Read/write/patch/search via backend.exec_oneoff."""
 
-    def __init__(self, backend):
+    def __init__(self, backend, provider: ShellProvider = BashShellProvider()):
         self._backend = backend
+        self._provider = provider
 
     # ---- read ----
 
@@ -298,28 +300,8 @@ class FileOperations:
             limit = cfg.default_read_limit
         limit = max(1, min(int(limit), cfg.max_read_limit))
 
-        q_path = shlex.quote(path)
-        q_max_size = shlex.quote(str(cfg.max_file_size))
         end_line = offset + limit - 1
-        # Combined read: 1 round-trip instead of 4 (size + binary sniff +
-        # content + total-lines).  Output is newline-separated; the head
-        # and content sections are base64 so they can't contain newlines
-        # that would confuse the parser.  Exit 2 = file not readable
-        # (caller treats as not_found); exit 0 = success.
-        #
-        # When file is too large, only line 1 (size) is emitted; the
-        # rest is skipped via the `if` branch so we don't waste exec
-        # work reading 4 KB and a slice of a multi-MB file.
-        cmd = (
-            f"f={q_path}; ms={q_max_size}; "
-            f'[[ ! -r "$f" ]] && exit 2; '
-            f'sz=$(stat -c %s "$f"); echo "$sz"; '
-            f"if (( sz <= ms )); then "
-            f'head -c 4096 "$f" | base64 -w0; echo; '
-            f'sed -n {offset},{end_line}p "$f" | base64 -w0; echo; '
-            f"wc -l < \"$f\" | tr -d ' '; "
-            f"fi"
-        )
+        cmd = self._provider.file_read_command(path, offset, limit, cfg.max_file_size)
         result = self._backend.exec_oneoff(machine, cmd)
         if result.get("exit_code") == 2:
             return self._suggest_similar_files(path, machine)
@@ -410,8 +392,7 @@ class FileOperations:
         """Return a not_found result with up to 5 similar files."""
         dirname = os.path.dirname(path) or "."
         basename = os.path.basename(path)
-        q_dir = shlex.quote(dirname)
-        ls_cmd = f"ls -1 {q_dir} 2>/dev/null | head -50"
+        ls_cmd = self._provider.list_dir_command(dirname)
         ls_result = self._backend.exec_oneoff(machine, ls_cmd)
         candidates: list[str] = []
         if ls_result.get("exit_code") == 0 and ls_result.get("output"):
@@ -453,7 +434,7 @@ class FileOperations:
         # Probe on-disk file (best-effort) so we can preserve its line
         # ending and BOM. ``cat`` may fail for non-existent files; that
         # is fine — no existing file means no preservation needed.
-        cat_result = self._backend.exec_oneoff(machine, f"cat {shlex.quote(path)} 2>/dev/null")
+        cat_result = self._backend.exec_oneoff(machine, self._provider.cat_command(path))
         pre_content = ""
         has_pre_bom = False
         if cat_result.get("exit_code") == 0 and cat_result.get("output"):
@@ -486,7 +467,7 @@ class FileOperations:
             }
 
         # Post-write verification: re-read and compare to intended.
-        verify = self._backend.exec_oneoff(machine, f"cat {shlex.quote(path)} 2>/dev/null")
+        verify = self._backend.exec_oneoff(machine, self._provider.cat_command(path))
         if verify.get("exit_code") not in (0, None):
             return {
                 "status": "error",
@@ -541,7 +522,7 @@ class FileOperations:
         self, machine: str, path: str, old_string: str, new_string: str, replace_all: bool
     ) -> dict:
         advisory = check_path_safety(path)
-        result = self._backend.exec_oneoff(machine, f"cat {shlex.quote(path)}")
+        result = self._backend.exec_oneoff(machine, self._provider.cat_command(path))
         if result.get("exit_code") not in (0, None):
             return {"status": "not_found", "path": path}
         original, original_bom = _strip_bom(result.get("output") or "")
@@ -584,7 +565,7 @@ class FileOperations:
             }
 
         # Post-write verification.
-        verify = self._backend.exec_oneoff(machine, f"cat {shlex.quote(path)}")
+        verify = self._backend.exec_oneoff(machine, self._provider.cat_command(path))
         if verify.get("exit_code") not in (0, None):
             return {"status": "error", "error": "post-patch re-read failed"}
         actual = verify.get("output") or ""
@@ -602,9 +583,8 @@ class FileOperations:
         if not patch_text.strip():
             return {"status": "error", "error": "patch is empty"}
         encoded = base64.b64encode(patch_text.encode("utf-8")).decode("ascii")
-        result = self._backend.exec_oneoff(
-            machine, f"echo {shlex.quote(encoded)} | base64 -d | patch -p0"
-        )
+        cmd = f"{self._provider.base64_decode_command(encoded)} | {self._provider.patch_apply_command()}"
+        result = self._backend.exec_oneoff(machine, cmd)
         if result.get("exit_code") not in (0, None):
             return {"status": "error", "error": result.get("stderr") or "patch failed"}
         return {"status": "ok"}
@@ -648,15 +628,8 @@ class FileOperations:
 
     def _search_files(self, pattern: str, machine: str, path: str, limit: int, offset: int) -> dict:
         """Glob-style file search via ripgrep --files with mtime sort."""
-        glob_pattern = (
-            f"*{pattern}" if "/" not in pattern and not pattern.startswith("*") else pattern
-        )
         fetch = limit + offset
-        cmd = (
-            f"set -o pipefail; "
-            f"rg --files --sortr=modified -g {shlex.quote(glob_pattern)} "
-            f"{shlex.quote(path)} 2>/dev/null | head -n {fetch}"
-        )
+        cmd = self._provider.search_files_command(pattern, path, fetch)
         result = self._backend.exec_oneoff(machine, cmd, timeout=60)
         diagnostics, payload = _split_tool_diagnostics(result.get("output") or "")
         files = [f for f in payload.splitlines() if f]
@@ -681,19 +654,10 @@ class FileOperations:
         context: int,
     ) -> dict:
         """ripgrep-based content search with diagnostics separation."""
-        q_pattern = shlex.quote(pattern)
-        q_path = shlex.quote(path)
-        cmd_parts = ["set -o pipefail; rg", "--line-number", "--no-heading", "--with-filename"]
-        if context > 0:
-            cmd_parts += ["-C", str(context)]
-        if file_glob:
-            cmd_parts += ["--glob", shlex.quote(file_glob)]
-        if output_mode == "files_only":
-            cmd_parts.append("-l")
-        elif output_mode == "count":
-            cmd_parts.append("-c")
-        cmd_parts += [q_pattern, q_path, "|", "head", "-n", str(limit + offset)]
-        result = self._backend.exec_oneoff(machine, " ".join(cmd_parts), timeout=60)
+        cmd = self._provider.search_content_command(
+            pattern, path, file_glob, limit + offset, output_mode, context
+        )
+        result = self._backend.exec_oneoff(machine, cmd, timeout=60)
         diagnostics, payload = _split_tool_diagnostics(result.get("output") or "")
         if result.get("exit_code") == 2 and not payload.strip():
             return {
