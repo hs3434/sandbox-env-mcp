@@ -39,6 +39,22 @@ def _find_ssh():
     return p
 
 
+def _decode_powershell_output(text: str) -> str:
+    """Detect UTF-16LE output from PowerShell 5.1 and re-decode.
+
+    PowerShell 5.1 on Windows outputs UTF-16LE when piped through SSH,
+    which ``subprocess`` (decoding as UTF-8) renders as interleaved null
+    bytes.  This function detects the pattern and re-decodes correctly.
+    """
+    if "\x00" not in text:
+        return text
+    try:
+        raw = text.encode("utf-8", errors="replace")
+        return raw.decode("utf-16-le", errors="replace").strip("\x00")
+    except Exception:
+        return text
+
+
 class SSHBackend(Backend):
     """SSH remote machine backend with ControlMaster multiplexing."""
 
@@ -298,10 +314,12 @@ class SSHBackend(Backend):
                 text=True,
                 timeout=timeout,
             )
+            stdout = _decode_powershell_output(result.stdout or "")
+            stderr = _decode_powershell_output(result.stderr or "")
             return {
                 "exit_code": result.returncode,
-                "output": result.stdout or "",
-                "stderr": result.stderr or "",
+                "output": stdout,
+                "stderr": stderr,
             }
         except subprocess.TimeoutExpired:
             return {"exit_code": None, "output": "", "stderr": "timeout"}

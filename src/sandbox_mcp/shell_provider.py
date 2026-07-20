@@ -35,6 +35,15 @@ class ShellProvider(ABC):
         """Flag passed to the shell for one-off execution: '-c' for bash,
         '-Command' for PowerShell."""
 
+    @property
+    def setup_command(self) -> str:
+        """Command to run once at shell startup before any user command.
+
+        Bash needs nothing; PowerShell 5.1 needs to set UTF-8 output
+        encoding to avoid UTF-16LE corruption over SSH.
+        """
+        return ""
+
     # ---- File read ----
 
     @abstractmethod

@@ -25,6 +25,10 @@ class PowerShellProvider(ShellProvider):
     def exec_flag(self) -> str:
         return "-Command"
 
+    @property
+    def setup_command(self) -> str:
+        return "[Console]::OutputEncoding = [Text.Encoding]::UTF8"
+
     @staticmethod
     def _esc(path: str) -> str:
         """Escape *path* for a single-quoted PowerShell string literal."""

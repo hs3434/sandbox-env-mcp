@@ -152,6 +152,15 @@ class ShellSession:
         self._state = "idle"
         self._drain_thread = threading.Thread(target=self._drain, daemon=True)
         self._drain_thread.start()
+        # Run provider-specific one-time setup (e.g. set UTF-8 encoding
+        # for PowerShell 5.1 so output isn't corrupted as UTF-16LE).
+        setup = self._provider.setup_command
+        if setup:
+            try:
+                self._process.stdin.write(f"{setup}\n".encode())
+                self._process.stdin.flush()
+            except (BrokenPipeError, OSError):
+                pass
 
     def _drain(self):
         """Background thread: read stdout line-by-line, detect markers.
@@ -390,13 +399,25 @@ class ShellSession:
             output = self._get_buffered_output(self.DEFAULT_MAX_OUTPUT)
             return self._with_pid({"output": output, "status": "running"})
 
+    @staticmethod
+    def _decode_bytes(data: bytes) -> str:
+        """Decode bytes, re-decoding as UTF-16LE if UTF-8 produces nulls.
+
+        PowerShell 5.1 outputs UTF-16LE over SSH pipes, which naive
+        UTF-8 decoding renders as interleaved ``\\u0000`` bytes.
+        """
+        text = data.decode("utf-8", errors="replace")
+        if "\x00" not in text:
+            return text
+        try:
+            return data.decode("utf-16-le", errors="replace").strip("\x00")
+        except Exception:
+            return text
+
     def _get_buffered_output(self, max_output):
         """Get buffered output, truncating if necessary."""
-        head_text = self._head.decode("utf-8", errors="replace")
-        tail_text = bytes(self._tail).decode("utf-8", errors="replace")
-
-        head_text = _MARKER_RE.sub("", head_text)
-        tail_text = _MARKER_RE.sub("", tail_text)
+        head_text = self._decode_bytes(self._head)
+        tail_text = self._decode_bytes(bytes(self._tail))
 
         full = head_text + tail_text
 
