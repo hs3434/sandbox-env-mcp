@@ -16,3 +16,4 @@ config/audit.db
 config/audit.db-shm
 config/audit.db-wal
 .worktrees/
+config/windows_rsa
