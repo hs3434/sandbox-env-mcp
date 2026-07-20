@@ -30,8 +30,6 @@ from typing import Any
 
 from sandbox_mcp.backends.base import TargetInfo
 from sandbox_mcp.backends.docker_backend import DockerBackend
-from sandbox_mcp.backends.ssh_backend import SSHBackend
-from sandbox_mcp.backends.winrm_backend import WinRMBackend
 from sandbox_mcp.config import load as _load_config
 
 logger = logging.getLogger(__name__)
@@ -54,9 +52,10 @@ HELP_RESPONSE = {
             "action": "list_targets",
             "summary": "List pre-defined SSH and WinRM targets from config.",
             "description": (
-                "Returns pre-configured SSH and WinRM targets defined in "
+                "Returns pre-configured targets defined in "
                 "config.toml under [ssh.targets.*] and [winrm.targets.*]. "
-                "Use these names with ssh_connect / winrm_connect."
+                "Each entry includes its backend type (ssh or winrm). "
+                "Use connect(name) to connect to a target."
             ),
             "example": {},
         },
@@ -450,78 +449,31 @@ DOCKER_HELP_RESPONSE = {
 }
 
 
-WINRM_HELP_RESPONSE = {
+TARGET_HELP_RESPONSE = {
     "operations": [
         {
-            "action": "winrm_connect",
-            "summary": "Connect to a remote Windows machine via WinRM.",
-            "description": "Connect to a remote Windows machine via WinRM (PowerShell Remoting).",
-            "required": {"name": "string", "host": "string", "user": "string", "password": "string", "purpose": "string"},
-            "optional": {
-                "port": "int — default 5986 (HTTPS) or 5985 (HTTP)",
-                "use_ssl": "bool — default true",
-                "transport": "string — ntlm (default), kerberos, credssp, basic",
-            },
+            "action": "connect",
+            "summary": "Connect to a target machine by name (reads params from config).",
+            "description": (
+                "Connect to a pre-defined target machine.  The target must be "
+                "defined in [ssh.targets.{name}] or [winrm.targets.{name}] in "
+                "config.toml.  Use list_targets to discover available machines."
+            ),
+            "required": {"name": "string — target name from list_targets"},
             "returns": {
                 "name": "string",
                 "status": "connected | error",
-                "backend": "winrm",
+                "backend": "ssh | winrm",
             },
-            "example": {
-                "name": "win-server",
-                "host": "windows-prod.contoso.com",
-                "user": "CONTOSO\\builder",
-                "purpose": "Windows build server",
-            },
+            "example": {"name": "win-build"},
         },
         {
-            "action": "winrm_close",
-            "summary": "Close WinRM connection and unregister the machine.",
-            "description": "Close WinRM connection and unregister the machine.",
-            "required": {"machine": "string"},
-            "returns": {
-                "machine": "string",
-                "status": "closed | error",
-            },
-        },
-    ]
-}
-
-
-SSH_HELP_RESPONSE = {
-    "operations": [
-        {
-            "action": "ssh_connect",
-            "summary": "Connect to an SSH remote machine (key auth only).",
-            "description": "Connect to an SSH remote machine (key auth only).",
-            "required": {"name": "string", "host": "string", "user": "string", "purpose": "string"},
-            "optional": {
-                "port": "int — default 22",
-                "key": "string — private key path",
-                "os_type": "string — 'linux' (default) or 'windows'",
-                "shell": "string — shell binary (default 'bash'; 'powershell.exe' for Windows)",
-            },
+            "action": "close",
+            "summary": "Disconnect and unregister a machine by name.",
+            "description": "Disconnect and unregister a machine.",
+            "required": {"name": "string"},
             "returns": {
                 "name": "string",
-                "status": "connected | error",
-                "backend": "ssh",
-            },
-            "example": {
-                "name": "win-build",
-                "host": "192.168.1.100",
-                "user": "builder",
-                "purpose": "Windows build server",
-                "os_type": "windows",
-                "shell": "powershell.exe",
-            },
-        },
-        {
-            "action": "ssh_close",
-            "summary": "Close SSH connection and unregister the machine.",
-            "description": "Close SSH connection and unregister the machine. Reconnect via ssh_connect.",
-            "required": {"machine": "string"},
-            "returns": {
-                "machine": "string",
                 "status": "closed | error",
             },
         },
@@ -600,17 +552,12 @@ class SandboxEnv:
     def _op_help(self, params):
         params = params or {}
         cfg = _load_config()
-        # Build the canonical action index.  Order: HELP_RESPONSE (core)
-        # then DOCKER_HELP_RESPONSE (always available — DockerBackend
-        # is always imported), then SSH only when SSH is configured,
-        # then WinRM when winrm backend is available.
+        # Build the canonical action index.
         all_ops: list[dict] = []
         all_ops.extend(HELP_RESPONSE["operations"])
         all_ops.extend(DOCKER_HELP_RESPONSE["operations"])
-        if cfg.ssh.targets:
-            all_ops.extend(SSH_HELP_RESPONSE["operations"])
-        if self._winrm is not None:
-            all_ops.extend(WINRM_HELP_RESPONSE["operations"])
+        if cfg.ssh.targets or cfg.winrm.targets:
+            all_ops.extend(TARGET_HELP_RESPONSE["operations"])
 
         topic = params.get("topic")
         if topic:
@@ -677,9 +624,14 @@ class SandboxEnv:
         }
 
     def _op_list_targets(self, params):
-        """List pre-defined SSH and WinRM targets from config."""
+        """List pre-defined SSH and WinRM targets from config, each with its backend type."""
         cfg = _load_config()
-        return {"targets": {"ssh": dict(cfg.ssh.targets), "winrm": dict(cfg.winrm.targets)}}
+        targets = {}
+        for name, t in cfg.ssh.targets.items():
+            targets[name] = {**t, "backend": "ssh"}
+        for name, t in cfg.winrm.targets.items():
+            targets[name] = {**t, "backend": "winrm"}
+        return {"targets": targets}
 
     # ---- general ----
 
@@ -713,13 +665,7 @@ class SandboxEnv:
         """
         return self._resolve_machine_of_type(params, action, DockerBackend, "Docker")
 
-    def _resolve_ssh_machine(self, params, action: str) -> tuple[str, SSHBackend] | dict:
-        """SSH counterpart of :meth:`_resolve_docker_machine`."""
-        return self._resolve_machine_of_type(params, action, SSHBackend, "SSH")
 
-    def _resolve_winrm_machine(self, params, action: str) -> tuple[str, WinRMBackend] | dict:
-        """WinRM counterpart of :meth:`_resolve_docker_machine`."""
-        return self._resolve_machine_of_type(params, action, WinRMBackend, "WinRM")
 
     def _op_default_set(self, params):
         has_machine = "machine" in params
@@ -972,56 +918,42 @@ class SandboxEnv:
     def _op_docker_restart(self, params, machine, backend):
         return backend.restart(machine, timeout=int(params.get("timeout", 10))).to_response()
 
-    # ---- SSH ----
+    # ---- Connect / Close (unified, reads target params from config) ----
 
-    def _op_ssh_connect(self, params):
-        err = self._require(params, "name", "host", "user", "purpose")
-        if err is not None:
-            return {"error": err}
-        info = self._machines.register(
-            params["name"],
-            self._ssh,
-            purpose=params.get("purpose", ""),
-            host=params["host"],
-            user=params["user"],
-            port=params.get("port", 22),
-            key=params.get("key"),
-            os_type=params.get("os_type", "linux"),
-            shell=params.get("shell", "bash"),
-        )
-        return {"name": info.name, "status": info.status, "backend": "ssh"}
+    def _op_connect(self, params):
+        """Connect to a target machine by name (reads params from config).
 
-    @_with_resolved("_resolve_ssh_machine", "ssh_close")
-    def _op_ssh_close(self, params, machine, backend):
+        The target must be defined in ``[ssh.targets.{name}]`` or
+        ``[winrm.targets.{name}]``.  Use ``list_targets`` to discover
+        available machines.
+        """
+        name = params.get("name", "")
+        if not name:
+            return {"error": "name is required"}
+
+        cfg = _load_config()
+        target = cfg.ssh.targets.get(name)
+        if target:
+            info = self._machines.register(name, self._ssh, **target)
+            return {"name": info.name, "status": info.status, "backend": "ssh"}
+
+        target = cfg.winrm.targets.get(name)
+        if target:
+            if self._winrm is None:
+                return {"error": "WinRM backend not available (install pywinrm)"}
+            info = self._machines.register(name, self._winrm, **target)
+            return {"name": info.name, "status": info.status, "backend": "winrm"}
+
+        return {"error": f"Unknown target: {name!r}. Use list_targets to see available machines."}
+
+    def _op_close(self, params):
+        """Disconnect and unregister a machine by name."""
+        name = params.get("name", "")
+        if not name:
+            return {"error": "name is required"}
+        machine = self._machines.resolve_machine(name)
+        backend = self._machines.get_backend(machine)
         self._shells.close_all_for_machine(machine)
         backend.remove(machine)
         self._machines.unregister(machine)
-        return {"machine": machine, "status": "closed", "backend": "ssh"}
-
-    # ---- WinRM ----
-
-    def _op_winrm_connect(self, params):
-        if self._winrm is None:
-            return {"error": "WinRM backend not available (install pywinrm)"}
-        err = self._require(params, "name", "host", "user", "password", "purpose")
-        if err is not None:
-            return {"error": err}
-        info = self._machines.register(
-            params["name"],
-            self._winrm,
-            purpose=params.get("purpose", ""),
-            host=params["host"],
-            user=params["user"],
-            password=params["password"],
-            port=params.get("port", 5986),
-            use_ssl=params.get("use_ssl", True),
-            transport=params.get("transport", "ntlm"),
-        )
-        return {"name": info.name, "status": info.status, "backend": "winrm"}
-
-    @_with_resolved("_resolve_winrm_machine", "winrm_close")
-    def _op_winrm_close(self, params, machine, backend):
-        self._shells.close_all_for_machine(machine)
-        backend.remove(machine)
-        self._machines.unregister(machine)
-        return {"machine": machine, "status": "closed", "backend": "winrm"}
+        return {"name": machine, "status": "closed"}
