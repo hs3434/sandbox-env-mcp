@@ -61,6 +61,34 @@ class SSHBackend(Backend):
         """Return the parent dir of the control socket, for cleanup on remove()."""
         return os.path.dirname(self._socket_path(name))
 
+    def _ensure_alive(self, name):
+        """Check if the ControlMaster socket is alive; reconnect if stale.
+
+        SSH connections can drop due to network issues, server restarts,
+        or idle timeouts exceeding ``ControlPersist``.  This method is
+        called before every operation so callers never see a stale socket.
+        """
+        target = self._targets.get(name)
+        if target is None:
+            return
+        socket = self._socket_path(name)
+        user = target.get("user", "")
+        host = target.get("host", "")
+        try:
+            check = subprocess.run(
+                [self._ssh, "-S", socket, "-O", "check", f"{user}@{host}"],
+                capture_output=True,
+                timeout=10,
+            )
+            if check.returncode == 0:
+                return  # Still alive
+        except Exception:
+            pass
+
+        # Stale — reconnect transparently.
+        keys = {"host", "user", "port", "key", "os_type"}
+        self.create(name, **{k: v for k, v in target.items() if k in keys})
+
     def _ssh_base_args(self, name):
         target = self._targets.get(name)
         if target is None:
@@ -202,11 +230,13 @@ class SSHBackend(Backend):
         )
 
     def open_shell(self, name):
+        self._ensure_alive(name)
         provider = self._provider.get(name, ShellProviderFactory.create("linux"))
         shell_args = [*self._ssh_base_args(name), *provider.default_shell_args]
         return ShellSession(shell_args, provider=provider)
 
     def exec_oneoff(self, name, command, timeout=30):
+        self._ensure_alive(name)
         provider = self._provider.get(name, ShellProviderFactory.create("linux"))
         try:
             result = subprocess.run(

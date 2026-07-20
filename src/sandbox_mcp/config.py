@@ -154,15 +154,13 @@ class SSHConfig:
     connect_timeout: int = 10
     socket_dir_prefix: str = "sandbox-mcp-ssh-"
     tmpfile_pattern: str = ".sandbox-mcp-tmp.XXXXXX"
-    # Default SSH target used when [default_machine] backend = "ssh".
-    # Leaving ``default_host`` empty disables the SSH default machine.
-    # These are connection params only; the machine name/purpose come
-    # from [default_machine].
-    default_host: str = ""
-    default_user: str = ""
-    default_port: int = 22
-    default_key: str = ""  # empty -> ssh-agent / default key
-    # Pre-defined SSH targets the agent can connect to. Format:
+    # Pre-defined SSH targets the agent can discover and connect to.
+    # The ``[default_machine] name`` is looked up in this table when
+    # the backend is "ssh".
+    # Format:
+    #   [ssh.targets.default]
+    #   host = "192.168.1.100"
+    #   user = "ubuntu"
     #   [ssh.targets.win-build]
     #   host = "192.168.1.100"
     #   user = "builder"
@@ -192,10 +190,10 @@ class WinRMConfig:
     default_use_ssl: bool = True
     default_transport: str = "ntlm"
     connect_timeout: int = 30
-    default_host: str = ""
-    default_user: str = ""
-    default_password: str = ""
-    # Pre-defined WinRM targets the agent can connect to. Format:
+    # Pre-defined WinRM targets the agent can connect to.
+    # The ``[default_machine] name`` is looked up in this table when
+    # the backend is "winrm".
+    # Format:
     #   [winrm.targets.win-server]
     #   host = "windows-prod.contoso.com"
     #   user = "CONTOSO\\builder"
@@ -281,16 +279,10 @@ def _apply_env_overrides(cfg: AppConfig) -> AppConfig:
         "ssh_connect_timeout": ("ssh", "connect_timeout", int),
         "ssh_socket_dir_prefix": ("ssh", "socket_dir_prefix", str),
         "ssh_tmpfile_pattern": ("ssh", "tmpfile_pattern", str),
-        "ssh_default_host": ("ssh", "default_host", str),
-        "ssh_default_user": ("ssh", "default_user", str),
-        "ssh_default_port": ("ssh", "default_port", int),
-        "ssh_default_key": ("ssh", "default_key", str),
         "winrm_default_port": ("winrm", "default_port", int),
         "winrm_default_use_ssl": ("winrm", "default_use_ssl", _as_bool),
         "winrm_default_transport": ("winrm", "default_transport", str),
         "winrm_connect_timeout": ("winrm", "connect_timeout", int),
-        "winrm_default_host": ("winrm", "default_host", str),
-        "winrm_default_user": ("winrm", "default_user", str),
         "shell_default_max_output": ("shell", "default_max_output", int),
         "shell_head_size": ("shell", "head_size", int),
         "shell_tail_size": ("shell", "tail_size", int),

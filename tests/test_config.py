@@ -247,15 +247,12 @@ def test_default_machine_defaults_enabled():
     assert not hasattr(dm, "host")
 
     ssh = SSHConfig()
-    assert ssh.default_host == ""
-    assert ssh.default_user == ""
-    assert ssh.default_port == 22
-    assert ssh.default_key == ""
+    assert ssh.targets == {}
 
 
 def test_default_machine_load_from_toml(monkeypatch, tmp_path):
-    """backend='ssh' target params come from [ssh] default_*, not
-    [default_machine]."""
+    """backend='ssh' target params come from [ssh.targets].  The
+    [default_machine] name is used to look up the target."""
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_text(
         """
@@ -265,11 +262,11 @@ backend = "ssh"
 name = "remote-dev"
 purpose = "auto-provisioned remote"
 
-[ssh]
-default_host = "10.0.0.5"
-default_user = "ubuntu"
-default_port = 2222
-default_key = "/home/ubuntu/.ssh/id_ed25519"
+[ssh.targets.remote-dev]
+host = "10.0.0.5"
+user = "ubuntu"
+port = 2222
+key = "/home/ubuntu/.ssh/id_ed25519"
 """
     )
     monkeypatch.setenv("SANDBOX_MCP_CONFIG", str(cfg_file))
@@ -279,24 +276,21 @@ default_key = "/home/ubuntu/.ssh/id_ed25519"
     assert dm.backend == "ssh"
     assert dm.name == "remote-dev"
     assert dm.purpose == "auto-provisioned remote"
-    ssh = cfg.ssh
-    assert ssh.default_host == "10.0.0.5"
-    assert ssh.default_user == "ubuntu"
-    assert ssh.default_port == 2222
-    assert ssh.default_key == "/home/ubuntu/.ssh/id_ed25519"
+    target = cfg.ssh.targets.get("remote-dev")
+    assert target is not None
+    assert target["host"] == "10.0.0.5"
+    assert target["user"] == "ubuntu"
+    assert target["port"] == 2222
+    assert target["key"] == "/home/ubuntu/.ssh/id_ed25519"
 
 
 def test_default_machine_env_overrides(monkeypatch):
-    """[default_machine] trigger fields + [ssh] default_* env overrides."""
+    """[default_machine] trigger fields env overrides."""
     monkeypatch.setenv("SANDBOX_MCP_DEFAULT_MACHINE_ENABLED", "true")
     monkeypatch.setenv("SANDBOX_MCP_DEFAULT_MACHINE_NAME", "devbox")
-    monkeypatch.setenv("SANDBOX_MCP_SSH_DEFAULT_HOST", "10.0.0.5")
-    monkeypatch.setenv("SANDBOX_MCP_SSH_DEFAULT_PORT", "2200")
     cfg = load()
     assert cfg.default_machine.enabled is True
     assert cfg.default_machine.name == "devbox"
-    assert cfg.ssh.default_host == "10.0.0.5"
-    assert cfg.ssh.default_port == 2200
 
 
 def test_default_machine_env_overrides_file(monkeypatch, tmp_path):
@@ -307,16 +301,11 @@ def test_default_machine_env_overrides_file(monkeypatch, tmp_path):
 [default_machine]
 enabled = false
 name = "from-file"
-
-[ssh]
-default_host = "from-file-host"
 """
     )
     monkeypatch.setenv("SANDBOX_MCP_CONFIG", str(cfg_file))
     monkeypatch.setenv("SANDBOX_MCP_DEFAULT_MACHINE_ENABLED", "true")
     monkeypatch.setenv("SANDBOX_MCP_DEFAULT_MACHINE_NAME", "from-env")
-    monkeypatch.setenv("SANDBOX_MCP_SSH_DEFAULT_HOST", "from-env-host")
     cfg = load()
     assert cfg.default_machine.enabled is True
     assert cfg.default_machine.name == "from-env"
-    assert cfg.ssh.default_host == "from-env-host"

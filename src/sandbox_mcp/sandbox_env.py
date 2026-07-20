@@ -607,7 +607,7 @@ class SandboxEnv:
         all_ops: list[dict] = []
         all_ops.extend(HELP_RESPONSE["operations"])
         all_ops.extend(DOCKER_HELP_RESPONSE["operations"])
-        if cfg.ssh.default_host:
+        if cfg.ssh.targets:
             all_ops.extend(SSH_HELP_RESPONSE["operations"])
         if self._winrm is not None:
             all_ops.extend(WINRM_HELP_RESPONSE["operations"])
@@ -679,18 +679,7 @@ class SandboxEnv:
     def _op_list_targets(self, params):
         """List pre-defined SSH and WinRM targets from config."""
         cfg = _load_config()
-        targets = {}
-        if cfg.ssh.default_host:
-            targets.setdefault("ssh", {})["default"] = {
-                "host": cfg.ssh.default_host,
-                "user": cfg.ssh.default_user,
-                "port": cfg.ssh.default_port,
-            }
-        for name, t in cfg.ssh.targets.items():
-            targets.setdefault("ssh", {})[name] = t
-        for name, t in cfg.winrm.targets.items():
-            targets.setdefault("winrm", {})[name] = t
-        return {"targets": targets}
+        return {"targets": {"ssh": dict(cfg.ssh.targets), "winrm": dict(cfg.winrm.targets)}}
 
     # ---- general ----
 

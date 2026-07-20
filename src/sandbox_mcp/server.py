@@ -423,9 +423,6 @@ class SandboxServer:
         logger.info("provisioning default machine %r via %s backend", name, cfg.backend)
         try:
             if cfg.backend == "docker":
-                # No image override here: the default machine reuses
-                # [docker] default_image (backend-specific config lives
-                # in its own section, not under [default_machine]).
                 info = self.machines.register(
                     name,
                     self._docker_backend,
@@ -433,24 +430,36 @@ class SandboxServer:
                 )
             elif cfg.backend == "ssh":
                 ssh_cfg = _load_config().ssh
-                if not ssh_cfg.default_host or not ssh_cfg.default_user:
+                target = ssh_cfg.targets.get(name)
+                if not target:
                     raise RuntimeError(
-                        "[default_machine] backend='ssh' requires "
-                        "[ssh] default_host and default_user"
+                        f"[default_machine] backend='ssh' with name={name!r} "
+                        f"requires [ssh.targets.{name}] to be defined"
                     )
                 info = self.machines.register(
                     name,
                     self._ssh_backend,
                     purpose=cfg.purpose,
-                    host=ssh_cfg.default_host,
-                    user=ssh_cfg.default_user,
-                    port=ssh_cfg.default_port,
-                    key=ssh_cfg.default_key or None,
+                    **target,
+                )
+            elif cfg.backend == "winrm":
+                wr_cfg = _load_config().winrm
+                target = wr_cfg.targets.get(name)
+                if not target:
+                    raise RuntimeError(
+                        f"[default_machine] backend='winrm' with name={name!r} "
+                        f"requires [winrm.targets.{name}] to be defined"
+                    )
+                info = self.machines.register(
+                    name,
+                    self._winrm_backend,
+                    purpose=cfg.purpose,
+                    **target,
                 )
             else:
                 raise RuntimeError(
                     f"[default_machine] unknown backend: {cfg.backend!r} "
-                    "(expected 'docker' or 'ssh')"
+                    "(expected 'docker', 'ssh', or 'winrm')"
                 )
         except Exception as e:
             raise RuntimeError(

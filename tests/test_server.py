@@ -238,25 +238,33 @@ def test_provision_default_machine_docker_surfaces_reattach_note(monkeypatch):
     assert srv.machines.get_default() == "default"
 
 
-def test_provision_default_machine_ssh(monkeypatch):
-    """enabled=true + ssh backend -> connects via [ssh] default_* and
+def test_provision_default_machine_ssh(monkeypatch, tmp_path):
+    """enabled=true + ssh backend -> looks up [ssh.targets.{name}] and
     sets the default machine."""
     from sandbox_mcp.backends.base import TargetInfo
 
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(
+        """
+[ssh.targets.remote]
+host = "10.0.0.5"
+user = "ubuntu"
+port = 2222
+key = "/k/id_ed25519"
+"""
+    )
+    monkeypatch.setenv("SANDBOX_MCP_CONFIG", str(cfg_file))
     monkeypatch.setenv("SANDBOX_MCP_DEFAULT_MACHINE_ENABLED", "true")
     monkeypatch.setenv("SANDBOX_MCP_DEFAULT_MACHINE_BACKEND", "ssh")
     monkeypatch.setenv("SANDBOX_MCP_DEFAULT_MACHINE_NAME", "remote")
-    monkeypatch.setenv("SANDBOX_MCP_SSH_DEFAULT_HOST", "10.0.0.5")
-    monkeypatch.setenv("SANDBOX_MCP_SSH_DEFAULT_USER", "ubuntu")
-    monkeypatch.setenv("SANDBOX_MCP_SSH_DEFAULT_PORT", "2222")
-    monkeypatch.setenv("SANDBOX_MCP_SSH_DEFAULT_KEY", "/k/id_ed25519")
     with (
         patch("sandbox_mcp.server.DockerBackend"),
         patch("sandbox_mcp.server.SSHBackend") as mock_ssh_cls,
     ):
         mock_ssh = mock_ssh_cls.return_value
         mock_ssh.create.return_value = TargetInfo(name="remote", backend="ssh", status="running")
-        srv = SandboxServer()
+        with patch("sandbox_mcp.server.WinRMBackend"):
+            srv = SandboxServer()
 
     mock_ssh.create.assert_called_once()
     kwargs = mock_ssh.create.call_args.kwargs
@@ -316,14 +324,15 @@ def test_provision_default_machine_reattaches_when_already_adopted(monkeypatch):
     assert srv.machines.get_default() == "dev"
 
 
-def test_provision_default_machine_ssh_requires_host_and_user(monkeypatch):
-    """backend='ssh' without [ssh] default_host/default_user -> RuntimeError."""
+def test_provision_default_machine_ssh_requires_target(monkeypatch):
+    """backend='ssh' without matching [ssh.targets.{name}] -> RuntimeError."""
     monkeypatch.setenv("SANDBOX_MCP_DEFAULT_MACHINE_ENABLED", "true")
     monkeypatch.setenv("SANDBOX_MCP_DEFAULT_MACHINE_BACKEND", "ssh")
     with (
         patch("sandbox_mcp.server.DockerBackend"),
         patch("sandbox_mcp.server.SSHBackend"),
-        pytest.raises(RuntimeError, match=r"requires.*default_host and default_user"),
+        patch("sandbox_mcp.server.WinRMBackend"),
+        pytest.raises(RuntimeError, match=r"requires \[ssh.targets.admin\]"),
     ):
         SandboxServer()
 
