@@ -162,6 +162,12 @@ class SSHConfig:
     default_user: str = ""
     default_port: int = 22
     default_key: str = ""  # empty -> ssh-agent / default key
+    # Pre-defined SSH targets the agent can connect to. Format:
+    #   [ssh.targets.win-build]
+    #   host = "192.168.1.100"
+    #   user = "builder"
+    #   os_type = "windows"
+    targets: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -186,6 +192,14 @@ class WinRMConfig:
     default_use_ssl: bool = True
     default_transport: str = "ntlm"
     connect_timeout: int = 30
+    default_host: str = ""
+    default_user: str = ""
+    default_password: str = ""
+    # Pre-defined WinRM targets the agent can connect to. Format:
+    #   [winrm.targets.win-server]
+    #   host = "windows-prod.contoso.com"
+    #   user = "CONTOSO\\builder"
+    targets: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -275,6 +289,8 @@ def _apply_env_overrides(cfg: AppConfig) -> AppConfig:
         "winrm_default_use_ssl": ("winrm", "default_use_ssl", _as_bool),
         "winrm_default_transport": ("winrm", "default_transport", str),
         "winrm_connect_timeout": ("winrm", "connect_timeout", int),
+        "winrm_default_host": ("winrm", "default_host", str),
+        "winrm_default_user": ("winrm", "default_user", str),
         "shell_default_max_output": ("shell", "default_max_output", int),
         "shell_head_size": ("shell", "head_size", int),
         "shell_tail_size": ("shell", "tail_size", int),

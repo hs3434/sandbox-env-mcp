@@ -139,13 +139,32 @@ default_user = ""
 default_port = 22
 default_key = ""           # empty -> ssh-agent / default key
 
+# Pre-defined SSH targets discoverable via env(action="list_targets").
+# Each target name becomes the machine name for ssh_connect.
+[ssh.targets]
+# Example:
+#   win-build = { host = "192.168.1.100", user = "builder", os_type = "windows", shell = "powershell.exe" }
+
 [winrm]
-# Default connection params for WinRM targets.
-# Per-target overrides are handled via winrm_connect params.
+# Default connection params for WinRM targets.  Per-target overrides
+# are handled via winrm_connect params at runtime.
 default_port = 5986
 default_use_ssl = true
 default_transport = "ntlm"
 connect_timeout = 30
+default_host = ""
+default_user = ""
+default_password = ""
+
+# Default WinRM target used when [default_machine] backend = "winrm".
+# Leaving default_host empty disables the WinRM default machine.
+# The machine name/purpose come from [default_machine]; only the
+# connection params live here.
+
+# Pre-defined WinRM targets discoverable via env(action="list_targets").
+[winrm.targets]
+# Example:
+#   win-server = { host = "windows-prod.contoso.com", user = "CONTOSO\\builder" }
 
 [shell]
 # Buffer sizes and the default per-call output cap (in bytes).

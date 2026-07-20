@@ -51,6 +51,16 @@ HELP_RESPONSE = {
     ],
     "operations": [
         {
+            "action": "list_targets",
+            "summary": "List pre-defined SSH and WinRM targets from config.",
+            "description": (
+                "Returns pre-configured SSH and WinRM targets defined in "
+                "config.toml under [ssh.targets.*] and [winrm.targets.*]. "
+                "Use these names with ssh_connect / winrm_connect."
+            ),
+            "example": {},
+        },
+        {
             "action": "machine_list",
             "summary": "List all registered machines.",
             "description": (
@@ -456,47 +466,22 @@ WINRM_HELP_RESPONSE = {
                 "name": "string",
                 "status": "connected | error",
                 "backend": "winrm",
-                "error": "string — only present when status='error'",
             },
             "example": {
-                "name": "win-vm",
+                "name": "win-server",
                 "host": "windows-prod.contoso.com",
                 "user": "CONTOSO\\builder",
-                "password": "***",
                 "purpose": "Windows build server",
             },
         },
         {
-            "action": "winrm_disconnect",
-            "summary": "Close WinRM connection (remote machine untouched).",
-            "description": "Close WinRM connection. Remote machine is not affected.",
+            "action": "winrm_close",
+            "summary": "Close WinRM connection and unregister the machine.",
+            "description": "Close WinRM connection and unregister the machine.",
             "required": {"machine": "string"},
             "returns": {
                 "machine": "string",
-                "status": "stopped | error",
-                "error": "string — only present when status='error'",
-            },
-        },
-        {
-            "action": "winrm_reconnect",
-            "summary": "Re-establish WinRM connection (shells lost on disconnect).",
-            "description": "Re-establish WinRM connection.",
-            "required": {"machine": "string"},
-            "returns": {
-                "machine": "string",
-                "status": "running | error",
-                "error": "string — only present when status='error'",
-            },
-        },
-        {
-            "action": "winrm_remove",
-            "summary": "Unregister WinRM machine (remote machine untouched).",
-            "description": "Unregister WinRM machine.",
-            "required": {"machine": "string"},
-            "returns": {
-                "machine": "string",
-                "status": "removed | error",
-                "error": "string — only present when status='error'",
+                "status": "closed | error",
             },
         },
     ]
@@ -511,58 +496,33 @@ SSH_HELP_RESPONSE = {
             "description": "Connect to an SSH remote machine (key auth only).",
             "required": {"name": "string", "host": "string", "user": "string", "purpose": "string"},
             "optional": {
-                "port": "int - default 22",
-                "key": "string - private key path (key auth only)",
-                "shell": (
-                    "Shell binary used for exec into this machine "
-                    "(default ``bash``). Set to e.g. ``/bin/sh`` for "
-                    "remote hosts without bash."
-                ),
+                "port": "int — default 22",
+                "key": "string — private key path",
+                "os_type": "string — 'linux' (default) or 'windows'",
+                "shell": "string — shell binary (default 'bash'; 'powershell.exe' for Windows)",
             },
             "returns": {
                 "name": "string",
                 "status": "connected | error",
                 "backend": "ssh",
-                "error": "string — only present when status='error'",
             },
             "example": {
-                "name": "remote",
+                "name": "win-build",
                 "host": "192.168.1.100",
-                "user": "ubuntu",
-                "purpose": "Remote server",
+                "user": "builder",
+                "purpose": "Windows build server",
+                "os_type": "windows",
+                "shell": "powershell.exe",
             },
         },
         {
-            "action": "ssh_disconnect",
-            "summary": "Close SSH connection (remote machine untouched).",
-            "description": "Close SSH connection. Remote machine is not affected.",
+            "action": "ssh_close",
+            "summary": "Close SSH connection and unregister the machine.",
+            "description": "Close SSH connection and unregister the machine. Reconnect via ssh_connect.",
             "required": {"machine": "string"},
             "returns": {
                 "machine": "string",
-                "status": "stopped | error",
-                "error": "string — only present when status='error'",
-            },
-        },
-        {
-            "action": "ssh_reconnect",
-            "summary": "Re-establish SSH connection (shells lost on disconnect).",
-            "description": "Re-establish SSH connection. Shells are lost on disconnect.",
-            "required": {"machine": "string"},
-            "returns": {
-                "machine": "string",
-                "status": "running | error",
-                "error": "string — only present when status='error'",
-            },
-        },
-        {
-            "action": "ssh_remove",
-            "summary": "Unregister SSH machine (remote machine untouched).",
-            "description": "Unregister SSH machine. Remote machine is not affected.",
-            "required": {"machine": "string"},
-            "returns": {
-                "machine": "string",
-                "status": "removed | error",
-                "error": "string — only present when status='error'",
+                "status": "closed | error",
             },
         },
     ]
@@ -595,8 +555,7 @@ def _with_resolved(resolver_attr: str, action: str):
 
     Centralises the "isinstance(resolved, dict)" gate that used to
     appear 12 times across docker_commit / stop / start / remove /
-    inspect / logs / diff / stats / restart / ssh_disconnect /
-    ssh_reconnect / ssh_remove.
+    inspect / logs / diff / stats / restart / ssh_close.
     """
 
     def deco(fn):
@@ -716,6 +675,22 @@ class SandboxEnv:
             "machines": machines,
             "shells": self._shells.list_shells(),
         }
+
+    def _op_list_targets(self, params):
+        """List pre-defined SSH and WinRM targets from config."""
+        cfg = _load_config()
+        targets = {}
+        if cfg.ssh.default_host:
+            targets.setdefault("ssh", {})["default"] = {
+                "host": cfg.ssh.default_host,
+                "user": cfg.ssh.default_user,
+                "port": cfg.ssh.default_port,
+            }
+        for name, t in cfg.ssh.targets.items():
+            targets.setdefault("ssh", {})[name] = t
+        for name, t in cfg.winrm.targets.items():
+            targets.setdefault("winrm", {})[name] = t
+        return {"targets": targets}
 
     # ---- general ----
 
@@ -1008,7 +983,7 @@ class SandboxEnv:
     def _op_docker_restart(self, params, machine, backend):
         return backend.restart(machine, timeout=int(params.get("timeout", 10))).to_response()
 
-    # ---- ssh ----
+    # ---- SSH ----
 
     def _op_ssh_connect(self, params):
         err = self._require(params, "name", "host", "user", "purpose")
@@ -1022,27 +997,19 @@ class SandboxEnv:
             user=params["user"],
             port=params.get("port", 22),
             key=params.get("key"),
+            os_type=params.get("os_type", "linux"),
             shell=params.get("shell", "bash"),
         )
         return {"name": info.name, "status": info.status, "backend": "ssh"}
 
-    @_with_resolved("_resolve_ssh_machine", "ssh_disconnect")
-    def _op_ssh_disconnect(self, params, machine, backend):
+    @_with_resolved("_resolve_ssh_machine", "ssh_close")
+    def _op_ssh_close(self, params, machine, backend):
         self._shells.close_all_for_machine(machine)
-        return backend.stop(machine).to_response()
-
-    @_with_resolved("_resolve_ssh_machine", "ssh_reconnect")
-    def _op_ssh_reconnect(self, params, machine, backend):
-        return backend.start(machine).to_response()
-
-    @_with_resolved("_resolve_ssh_machine", "ssh_remove")
-    def _op_ssh_remove(self, params, machine, backend):
-        self._shells.close_all_for_machine(machine)
-        result = backend.remove(machine)
+        backend.remove(machine)
         self._machines.unregister(machine)
-        return result
+        return {"machine": machine, "status": "closed", "backend": "ssh"}
 
-    # ---- WinRM actions ----
+    # ---- WinRM ----
 
     def _op_winrm_connect(self, params):
         if self._winrm is None:
@@ -1063,18 +1030,9 @@ class SandboxEnv:
         )
         return {"name": info.name, "status": info.status, "backend": "winrm"}
 
-    @_with_resolved("_resolve_winrm_machine", "winrm_disconnect")
-    def _op_winrm_disconnect(self, params, machine, backend):
+    @_with_resolved("_resolve_winrm_machine", "winrm_close")
+    def _op_winrm_close(self, params, machine, backend):
         self._shells.close_all_for_machine(machine)
-        return backend.stop(machine).to_response()
-
-    @_with_resolved("_resolve_winrm_machine", "winrm_reconnect")
-    def _op_winrm_reconnect(self, params, machine, backend):
-        return backend.start(machine).to_response()
-
-    @_with_resolved("_resolve_winrm_machine", "winrm_remove")
-    def _op_winrm_remove(self, params, machine, backend):
-        self._shells.close_all_for_machine(machine)
-        result = backend.remove(machine)
+        backend.remove(machine)
         self._machines.unregister(machine)
-        return result
+        return {"machine": machine, "status": "closed", "backend": "winrm"}
