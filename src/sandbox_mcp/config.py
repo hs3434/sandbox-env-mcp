@@ -115,6 +115,7 @@ class DockerConfig:
     restart_policy_name: str = "on-failure"
     restart_max_retry_count: int = 3
     write_tmp_prefix: str = "/tmp/.sandbox-mcp-write-"
+    os_type: str = ""  # Empty = auto-detect, "linux" or "windows"
     # User-defined bridge network for DNS-resolvable container-to-container
     # communication.  Created lazily on first docker_run.  Empty = no network.
     auto_network: str = "sandbox-mcp"
@@ -180,6 +181,14 @@ class FilesConfig:
 
 
 @dataclass(frozen=True)
+class WinRMConfig:
+    default_port: int = 5986
+    default_use_ssl: bool = True
+    default_transport: str = "ntlm"
+    connect_timeout: int = 30
+
+
+@dataclass(frozen=True)
 class DefaultMachineConfig:
     """Opt-in default machine provisioned at startup.
 
@@ -218,6 +227,7 @@ class AppConfig:
     audit: AuditConfig = field(default_factory=AuditConfig)
     docker: DockerConfig = field(default_factory=DockerConfig)
     ssh: SSHConfig = field(default_factory=SSHConfig)
+    winrm: WinRMConfig = field(default_factory=WinRMConfig)
     shell: ShellConfig = field(default_factory=ShellConfig)
     files: FilesConfig = field(default_factory=FilesConfig)
     default_machine: DefaultMachineConfig = field(default_factory=DefaultMachineConfig)
@@ -231,6 +241,7 @@ def _apply_env_overrides(cfg: AppConfig) -> AppConfig:
         "audit": {},
         "docker": {},
         "ssh": {},
+        "winrm": {},
         "shell": {},
         "files": {},
         "default_machine": {},
@@ -260,6 +271,10 @@ def _apply_env_overrides(cfg: AppConfig) -> AppConfig:
         "ssh_default_user": ("ssh", "default_user", str),
         "ssh_default_port": ("ssh", "default_port", int),
         "ssh_default_key": ("ssh", "default_key", str),
+        "winrm_default_port": ("winrm", "default_port", int),
+        "winrm_default_use_ssl": ("winrm", "default_use_ssl", _as_bool),
+        "winrm_default_transport": ("winrm", "default_transport", str),
+        "winrm_connect_timeout": ("winrm", "connect_timeout", int),
         "shell_default_max_output": ("shell", "default_max_output", int),
         "shell_head_size": ("shell", "head_size", int),
         "shell_tail_size": ("shell", "tail_size", int),

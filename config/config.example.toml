@@ -72,6 +72,11 @@ restart_max_retry_count = 3
 
 write_tmp_prefix = "/tmp/.sandbox-mcp-write-"
 
+# Container OS for Docker backend.  Empty = auto-detect from image metadata.
+# Set to "windows" to run Windows containers (requires Docker Desktop in
+# Windows container mode).
+os_type = ""
+
 # User-defined bridge network for DNS-resolvable container-to-container
 # communication.  Created lazily on first docker_run.  Empty = no network.
 auto_network = "sandbox-mcp"
@@ -133,6 +138,14 @@ default_host = ""
 default_user = ""
 default_port = 22
 default_key = ""           # empty -> ssh-agent / default key
+
+[winrm]
+# Default connection params for WinRM targets.
+# Per-target overrides are handled via winrm_connect params.
+default_port = 5986
+default_use_ssl = true
+default_transport = "ntlm"
+connect_timeout = 30
 
 [shell]
 # Buffer sizes and the default per-call output cap (in bytes).

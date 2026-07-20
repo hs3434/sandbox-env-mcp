@@ -48,6 +48,10 @@ _BLOCKED_EXACT_PATHS: frozenset[str] = frozenset(
         "/etc/passwd",
         "/etc/sudoers",
         "/etc/gshadow",
+        # Windows equivalents (used by PowerShellProvider)
+        "C:\\Windows\\System32\\config\\SAM",
+        "C:\\Windows\\System32\\config\\SECURITY",
+        "C:\\Windows\\System32\\config\\SYSTEM",
     }
 )
 
@@ -83,6 +87,11 @@ _BLOCKED_PATH_PREFIXES: tuple[str, ...] = (
     "/home/user/.kube",
     "/home/deploy/.ssh",
     "/home/deploy/.aws",
+    # Windows equivalents
+    "/Users/.ssh",
+    "/Users/.aws",
+    "/Users/.gnupg",
+    "/Users/.kube",
 )
 
 

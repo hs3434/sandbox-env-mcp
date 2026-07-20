@@ -3,10 +3,11 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sandbox-mcp"
-version = "0.2.0"
+name = "sandbox-env-mcp"
+version = "0.2.1"
 description = "Sandbox Environment Manager MCP server"
 requires-python = ">=3.12"
+readme = "README.md"
 license = {text = "AGPL-3.0-only OR Commercial-License"}
 authors = [{name = "Sandbox MCP Contributors"}]
 classifiers = [
@@ -32,7 +33,7 @@ dependencies = [
 # registry publishing is ``server.json`` in the repo root; this table
 # exists so any tool that introspects pyproject.toml can also recover it.
 [tool.mcp]
-name = "io.github.hs3434/sandbox-mcp"
+name = "io.github.hs3434/sandbox-env-mcp"
 
 [project.optional-dependencies]
 dev = [
@@ -40,10 +41,13 @@ dev = [
     "ruff>=0.6.0",
     "mypy>=1.10.0",
 ]
+winrm = ["pywinrm>=0.5.0"]
 
 [project.scripts]
 sandbox-mcp = "sandbox_mcp.server:main"
 sandbox-mcp-http = "sandbox_mcp.server:main_http"
+sandbox-env-mcp = "sandbox_mcp.server:main"
+sandbox-env-mcp-http = "sandbox_mcp.server:main_http"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -66,6 +66,7 @@ from sandbox_mcp.auth import (
 )
 from sandbox_mcp.backends.docker_backend import DockerBackend
 from sandbox_mcp.backends.ssh_backend import SSHBackend
+from sandbox_mcp.backends.winrm_backend import WinRMBackend
 from sandbox_mcp.config import load as _load_config
 from sandbox_mcp.file_operations import FileOperations
 from sandbox_mcp.sandbox_env import SandboxEnv
@@ -365,8 +366,10 @@ class SandboxServer:
         self.shells = ShellRegistry()
         self._docker_backend = DockerBackend()
         self._ssh_backend = SSHBackend()
+        self._winrm_backend = WinRMBackend()
         self.sandbox_env = SandboxEnv(
-            self.machines, self.shells, self._docker_backend, self._ssh_backend
+            self.machines, self.shells, self._docker_backend,
+            self._ssh_backend, winrm_backend=self._winrm_backend,
         )
         # Look up DEFAULT_AUDIT_LOGGER via the module each time, not via
         # a captured ``from X import Y`` binding — main_http() calls

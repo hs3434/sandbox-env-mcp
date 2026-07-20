@@ -31,6 +31,7 @@ from typing import Any
 from sandbox_mcp.backends.base import TargetInfo
 from sandbox_mcp.backends.docker_backend import DockerBackend
 from sandbox_mcp.backends.ssh_backend import SSHBackend
+from sandbox_mcp.backends.winrm_backend import WinRMBackend
 from sandbox_mcp.config import load as _load_config
 
 logger = logging.getLogger(__name__)
@@ -439,6 +440,69 @@ DOCKER_HELP_RESPONSE = {
 }
 
 
+WINRM_HELP_RESPONSE = {
+    "operations": [
+        {
+            "action": "winrm_connect",
+            "summary": "Connect to a remote Windows machine via WinRM.",
+            "description": "Connect to a remote Windows machine via WinRM (PowerShell Remoting).",
+            "required": {"name": "string", "host": "string", "user": "string", "password": "string", "purpose": "string"},
+            "optional": {
+                "port": "int — default 5986 (HTTPS) or 5985 (HTTP)",
+                "use_ssl": "bool — default true",
+                "transport": "string — ntlm (default), kerberos, credssp, basic",
+            },
+            "returns": {
+                "name": "string",
+                "status": "connected | error",
+                "backend": "winrm",
+                "error": "string — only present when status='error'",
+            },
+            "example": {
+                "name": "win-vm",
+                "host": "windows-prod.contoso.com",
+                "user": "CONTOSO\\builder",
+                "password": "***",
+                "purpose": "Windows build server",
+            },
+        },
+        {
+            "action": "winrm_disconnect",
+            "summary": "Close WinRM connection (remote machine untouched).",
+            "description": "Close WinRM connection. Remote machine is not affected.",
+            "required": {"machine": "string"},
+            "returns": {
+                "machine": "string",
+                "status": "stopped | error",
+                "error": "string — only present when status='error'",
+            },
+        },
+        {
+            "action": "winrm_reconnect",
+            "summary": "Re-establish WinRM connection (shells lost on disconnect).",
+            "description": "Re-establish WinRM connection.",
+            "required": {"machine": "string"},
+            "returns": {
+                "machine": "string",
+                "status": "running | error",
+                "error": "string — only present when status='error'",
+            },
+        },
+        {
+            "action": "winrm_remove",
+            "summary": "Unregister WinRM machine (remote machine untouched).",
+            "description": "Unregister WinRM machine.",
+            "required": {"machine": "string"},
+            "returns": {
+                "machine": "string",
+                "status": "removed | error",
+                "error": "string — only present when status='error'",
+            },
+        },
+    ]
+}
+
+
 SSH_HELP_RESPONSE = {
     "operations": [
         {
@@ -553,11 +617,12 @@ def _with_resolved(resolver_attr: str, action: str):
 class SandboxEnv:
     """Dispatches sandbox_env actions and generates help responses."""
 
-    def __init__(self, targets, shells, docker_backend, ssh_backend):
+    def __init__(self, targets, shells, docker_backend, ssh_backend, winrm_backend=None):
         self._machines = targets
         self._shells = shells
         self._docker = docker_backend
         self._ssh = ssh_backend
+        self._winrm = winrm_backend
 
     def dispatch(self, action: str, params: dict) -> Any:
         handler = getattr(self, f"_op_{action}", None)
@@ -578,12 +643,15 @@ class SandboxEnv:
         cfg = _load_config()
         # Build the canonical action index.  Order: HELP_RESPONSE (core)
         # then DOCKER_HELP_RESPONSE (always available — DockerBackend
-        # is always imported), then SSH only when SSH is configured.
+        # is always imported), then SSH only when SSH is configured,
+        # then WinRM when winrm backend is available.
         all_ops: list[dict] = []
         all_ops.extend(HELP_RESPONSE["operations"])
         all_ops.extend(DOCKER_HELP_RESPONSE["operations"])
         if cfg.ssh.default_host:
             all_ops.extend(SSH_HELP_RESPONSE["operations"])
+        if self._winrm is not None:
+            all_ops.extend(WINRM_HELP_RESPONSE["operations"])
 
         topic = params.get("topic")
         if topic:
@@ -684,6 +752,10 @@ class SandboxEnv:
     def _resolve_ssh_machine(self, params, action: str) -> tuple[str, SSHBackend] | dict:
         """SSH counterpart of :meth:`_resolve_docker_machine`."""
         return self._resolve_machine_of_type(params, action, SSHBackend, "SSH")
+
+    def _resolve_winrm_machine(self, params, action: str) -> tuple[str, WinRMBackend] | dict:
+        """WinRM counterpart of :meth:`_resolve_docker_machine`."""
+        return self._resolve_machine_of_type(params, action, WinRMBackend, "WinRM")
 
     def _op_default_set(self, params):
         has_machine = "machine" in params
@@ -965,6 +1037,43 @@ class SandboxEnv:
 
     @_with_resolved("_resolve_ssh_machine", "ssh_remove")
     def _op_ssh_remove(self, params, machine, backend):
+        self._shells.close_all_for_machine(machine)
+        result = backend.remove(machine)
+        self._machines.unregister(machine)
+        return result
+
+    # ---- WinRM actions ----
+
+    def _op_winrm_connect(self, params):
+        if self._winrm is None:
+            return {"error": "WinRM backend not available (install pywinrm)"}
+        err = self._require(params, "name", "host", "user", "password", "purpose")
+        if err is not None:
+            return {"error": err}
+        info = self._machines.register(
+            params["name"],
+            self._winrm,
+            purpose=params.get("purpose", ""),
+            host=params["host"],
+            user=params["user"],
+            password=params["password"],
+            port=params.get("port", 5986),
+            use_ssl=params.get("use_ssl", True),
+            transport=params.get("transport", "ntlm"),
+        )
+        return {"name": info.name, "status": info.status, "backend": "winrm"}
+
+    @_with_resolved("_resolve_winrm_machine", "winrm_disconnect")
+    def _op_winrm_disconnect(self, params, machine, backend):
+        self._shells.close_all_for_machine(machine)
+        return backend.stop(machine).to_response()
+
+    @_with_resolved("_resolve_winrm_machine", "winrm_reconnect")
+    def _op_winrm_reconnect(self, params, machine, backend):
+        return backend.start(machine).to_response()
+
+    @_with_resolved("_resolve_winrm_machine", "winrm_remove")
+    def _op_winrm_remove(self, params, machine, backend):
         self._shells.close_all_for_machine(machine)
         result = backend.remove(machine)
         self._machines.unregister(machine)
