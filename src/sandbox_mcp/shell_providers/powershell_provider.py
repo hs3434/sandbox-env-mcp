@@ -30,7 +30,9 @@ class PowerShellProvider(ShellProvider):
         return (
             "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
             "$OutputEncoding = [Text.Encoding]::UTF8; "
-            "$PSDefaultParameterValues['*:Encoding']='utf8'"
+            "$PSDefaultParameterValues['*:Encoding']='utf8'; "
+            "Remove-Module PSReadLine -ErrorAction SilentlyContinue; "
+            "function prompt { 'PS> ' }"
         )
 
     @staticmethod

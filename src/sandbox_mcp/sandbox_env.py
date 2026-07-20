@@ -898,6 +898,8 @@ class SandboxEnv:
             result = {"name": info.name, "status": info.status, "backend": "ssh"}
             if info.error:
                 result["error"] = info.error
+            if info.status == "running":
+                self.shells.get_or_create_default(name, lambda: self._ssh.open_shell(name))
             return result
 
         target = cfg.winrm.targets.get(name)
@@ -922,4 +924,5 @@ class SandboxEnv:
         self._shells.close_all_for_machine(machine)
         backend.remove(machine)
         self._machines.unregister(machine)
-        return {"name": machine, "status": "closed"}
+        return {"name": machine, "status": "closed",
+                "hint": f"Reconnect with connect(name={machine!r}) if needed."}
