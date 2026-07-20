@@ -359,6 +359,15 @@ class ShellSession:
                 return self._with_pid(
                     {"output": output, "exit_code": exit_code, "status": "completed"}
                 )
+            # Command timed out — shell may be stuck in continuation mode.
+            # Send a reset to break back to a clean prompt.
+            reset = self._provider.reset_command
+            if reset:
+                try:
+                    self._process.stdin.write(f"{reset}\n".encode())
+                    self._process.stdin.flush()
+                except (BrokenPipeError, OSError):
+                    pass
             output = self._get_buffered_output(max_output)
             with self._lock:
                 if self._state == "busy":

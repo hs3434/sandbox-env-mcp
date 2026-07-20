@@ -26,6 +26,10 @@ class PowerShellProvider(ShellProvider):
         return "-Command"
 
     @property
+    def reset_command(self) -> str:
+        return "$null"
+
+    @property
     def setup_command(self) -> str:
         return (
             "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
