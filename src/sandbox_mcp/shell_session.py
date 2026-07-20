@@ -61,10 +61,11 @@ class ShellUnhealthy(Exception):
 def _health_check(session) -> None:
     """Verify a session is alive by sending ``true``.
 
-    Healthy bash responds in ~ms; only a broken shell hits the 1s
-    timeout.  Raises :class:`ShellUnhealthy` on any failure.
+    Healthy bash responds in ~ms; PowerShell on remote Windows may take
+    a few seconds for its first command.  Raises :class:`ShellUnhealthy`
+    on any failure.
     """
-    result = session.send("true", wait=True, timeout=1)
+    result = session.send("true", wait=True, timeout=10)
     if session.state == "terminated":
         raise ShellUnhealthy("shell died during health check")
     if result.get("status") != "completed":

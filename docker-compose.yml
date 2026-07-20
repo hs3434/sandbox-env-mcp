@@ -65,9 +65,9 @@ services:
     image: sandbox-mcp:latest
     container_name: sandbox-mcp
     restart: unless-stopped
-
-    ports:
-      - "${SANDBOX_MCP_PORT:-8010}:${SANDBOX_MCP_PORT:-8010}"
+    network_mode: host
+    # ports:  # host network mode — no need for port mapping
+    #   - "${SANDBOX_MCP_PORT:-8010}:${SANDBOX_MCP_PORT:-8010}"
 
     # Pass the chosen port + work_home into the container so the
     # healthcheck / filesystem path / config all agree on the same value.

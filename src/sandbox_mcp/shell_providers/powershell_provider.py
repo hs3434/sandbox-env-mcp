@@ -8,7 +8,8 @@ class PowerShellProvider(ShellProvider):
     Windows machines (WinRM / SSH).
 
     All commands are designed for ``powershell.exe -NoLogo -NoProfile
-    -NonInteractive -Command``.  Paths are single-quoted to avoid
+    -NonInteractive`` (interactive stdin) or with ``exec_flag`` ``-Command``
+    for one-off execution.  Paths are single-quoted to avoid
     variable-expansion issues.
     """
 
@@ -18,7 +19,7 @@ class PowerShellProvider(ShellProvider):
 
     @property
     def default_shell_args(self) -> list[str]:
-        return ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]
+        return ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive"]
 
     @property
     def exec_flag(self) -> str:
