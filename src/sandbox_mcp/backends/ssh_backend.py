@@ -28,6 +28,7 @@ import time
 
 from sandbox_mcp.backends.base import Backend, TargetInfo
 from sandbox_mcp.config import load as _load_config
+from sandbox_mcp.shell_provider import ShellProvider, ShellProviderFactory
 from sandbox_mcp.shell_session import ShellSession
 
 
@@ -45,6 +46,7 @@ class SSHBackend(Backend):
         self._ssh = _find_ssh()
         self._targets: dict[str, dict] = {}
         self._shell: dict[str, str] = {}
+        self._provider: dict[str, ShellProvider] = {}
 
     def _socket_path(self, name):
         target = self._targets.get(name)
@@ -121,19 +123,23 @@ class SSHBackend(Backend):
             "user": user,
             "port": port,
             "key": key,
+            "os_type": kwargs.get("os_type", "linux"),
             "socket": self._socket_path(name),
             "socket_dir": self._socket_dir(name),
             "purpose": purpose,
             "started_at": time.time(),
         }
-        self._shell[name] = kwargs.get("shell", "bash")
+        os_type = kwargs.get("os_type", "linux")
+        self._provider[name] = ShellProviderFactory.create(os_type)
+        self._shell[name] = kwargs.get("shell", "powershell.exe" if os_type == "windows" else "bash")
         return TargetInfo(name=name, backend="ssh", status="running", purpose=purpose)
 
     def start(self, name):
         """Reconnect SSH ControlMaster."""
         target = self._targets.get(name, {})
+        keys = {"host", "user", "port", "key", "os_type"}
         return self.create(
-            name, **{k: v for k, v in target.items() if k in ("host", "user", "port", "key")}
+            name, **{k: v for k, v in target.items() if k in keys}
         )
 
     def stop(self, name):
@@ -196,12 +202,15 @@ class SSHBackend(Backend):
         )
 
     def open_shell(self, name):
-        return ShellSession([*self._ssh_base_args(name), self._shell.get(name, "bash")])
+        provider = self._provider.get(name, ShellProviderFactory.create("linux"))
+        shell_args = [*self._ssh_base_args(name), *provider.default_shell_args]
+        return ShellSession(shell_args, provider=provider)
 
     def exec_oneoff(self, name, command, timeout=30):
+        provider = self._provider.get(name, ShellProviderFactory.create("linux"))
         try:
             result = subprocess.run(
-                [*self._ssh_base_args(name), self._shell.get(name, "bash"), "-c", command],
+                [*self._ssh_base_args(name), *provider.default_shell_args, provider.exec_flag, command],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -224,9 +233,11 @@ class SSHBackend(Backend):
         """
         import os as _os
 
+        provider = self._provider.get(name, ShellProviderFactory.create("linux"))
+
         parent = _os.path.dirname(path) or "/"
         if parent != "/":
-            mkdir = self.exec_oneoff(name, f"mkdir -p {shlex.quote(parent)}")
+            mkdir = self.exec_oneoff(name, provider.mkdir_command(parent))
             if mkdir.get("exit_code") not in (0, None):
                 return {
                     "status": "error",
@@ -234,20 +245,10 @@ class SSHBackend(Backend):
                     "error": mkdir.get("stderr") or "mkdir failed",
                 }
 
-        pattern = _load_config().ssh.tmpfile_pattern
-        script = (
-            "set -e; "
-            f"t={shlex.quote(path)}; "
-            f'tmp=$(mktemp -p "${{t%/*}}" {pattern} 2>/dev/null || '
-            f"mktemp {pattern} 2>/dev/null); "
-            '[ -n "$tmp" ] || { echo "atomic write: mktemp failed" >&2; exit 1; }; '
-            'cat > "$tmp"; '
-            'mv -f "$tmp" "$t"; '
-            'rm -f "$tmp"'
-        )
+        script = provider.atomic_write_script(path)
         try:
             result = subprocess.run(
-                [*self._ssh_base_args(name), self._shell.get(name, "bash"), "-c", script],
+                [*self._ssh_base_args(name), *provider.default_shell_args, provider.exec_flag, script],
                 input=content,
                 capture_output=True,
                 timeout=60,
