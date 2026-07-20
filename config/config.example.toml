@@ -181,14 +181,10 @@ default_search_limit = 50
 # docker_ps reconciliation pass runs first, so on a restart the
 # surviving container is re-adopted instead of re-created.
 #
-# This section holds only the trigger.  Backend-specific params live in
-# their own sections: docker image = [docker] default_image; SSH target
-# = [ssh] default_host / default_user / default_port / default_key.
+# This section holds only the trigger.  Connection params are looked up
+# by name: docker image = [docker] default_image; SSH target =
+# [ssh.targets.{name}]; WinRM target = [winrm.targets.{name}].
 enabled = true
-backend = "docker"       # "docker" or "ssh"
-# Defaults to "admin" so enabling [default_machine] without naming a
-# machine provisions the admin container (see [docker] admin_machine).
-# DockerBackend.create detects the name match and applies the god-mode
-# mount layout — no special-casing in the startup path.
+backend = "docker"       # "docker", "ssh", or "winrm"
 name = "admin"
 purpose = ""

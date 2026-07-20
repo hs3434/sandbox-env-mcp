@@ -205,7 +205,7 @@ class DefaultMachineConfig:
     """Opt-in default machine provisioned at startup.
 
     When ``enabled`` is true, ``SandboxServer.__init__`` provisions a
-    machine (via the docker or ssh backend) right after the
+    machine (via the configured backend) right after the
     ``docker_ps`` reconciliation pass, so the agent can use
     ``shell_exec`` / ``file_*`` immediately without an
     explicit ``docker_run`` / ``ssh_connect``.
@@ -216,14 +216,14 @@ class DefaultMachineConfig:
     preserve the historical lazy behaviour.
 
     This section holds only the *trigger* (whether, which backend, what
-    name).  Backend-specific connection params live in their own
-    sections: docker image comes from ``[docker] default_image``; the
-    SSH target comes from ``[ssh] default_host`` / ``default_user`` /
-    ``default_port`` / ``default_key``.
+    name).  Backend-specific connection params are looked up by name:
+    docker image comes from ``[docker] default_image``; the SSH target
+    comes from ``[ssh.targets.{name}]``; the WinRM target comes from
+    ``[winrm.targets.{name}]``.
     """
 
     enabled: bool = True
-    backend: str = "docker"  # "docker" or "ssh"
+    backend: str = "docker"  # "docker", "ssh", or "winrm"
     # Defaults to ``admin`` so an operator who enables ``[default_machine]``
     # without picking a name gets the admin machine — the admin system
     # (see ``[docker] admin_machine``) takes over the provisioning and
