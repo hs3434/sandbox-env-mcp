@@ -359,14 +359,15 @@ class ShellSession:
                 return self._with_pid(
                     {"output": output, "exit_code": exit_code, "status": "completed"}
                 )
-            # Command timed out — reset state to idle so the next send()
-            # can retry (or send a cleanup command like $null).
             output = self._get_buffered_output(max_output)
             with self._lock:
                 if self._state != "terminated":
                     self._state = "idle"
             return self._with_pid(
-                {"output": output, "exit_code": None, "status": "running"}
+                {"output": output, "exit_code": None, "status": "timeout",
+                 "hint": "Command did not complete within timeout. "
+                         "Shell is still alive — retry the command or "
+                         "send a cleanup command like $null (PowerShell)."}
             )
 
         if self._start_event.wait(timeout=2.0):

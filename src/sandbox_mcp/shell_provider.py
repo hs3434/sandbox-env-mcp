@@ -44,16 +44,7 @@ class ShellProvider(ABC):
         """
         return ""
 
-    @property
-    def reset_command(self) -> str:
-        """Command to send when a command times out (shell may be stuck
-        in continuation mode).  Should break the shell back to a clean
-        prompt without producing output or changing state.
 
-        Bash rarely reaches continuation mode; PowerShell may need a
-        simple ``$null`` statement to break out.
-        """
-        return ""
 
     # ---- File read ----
 

@@ -79,10 +79,10 @@ def test_send_wait_true_exit_code():
     session.close()
 
 
-def test_send_wait_true_timeout_returns_running():
+def test_send_wait_true_timeout_returns_timeout():
     session = ShellSession(["bash"])
     result = session.send("sleep 5", wait=True, timeout=1)
-    assert result["status"] == "running"
+    assert result["status"] == "timeout"
     assert result["exit_code"] is None
     session.close()
 
@@ -96,11 +96,15 @@ def test_send_wait_false_confirms_execution():
 
 
 def test_send_on_busy_shell_rejected():
+    """After a timeout the shell is reset to idle — next send can proceed."""
     session = ShellSession(["bash"])
-    session.send("sleep 2", wait=True, timeout=0.5)
-    result = session.send("echo should_fail", wait=True, timeout=1)
-    assert result["status"] == "error"
-    assert "busy" in result.get("error", "").lower()
+    result1 = session.send("sleep 2", wait=True, timeout=0.5)
+    assert result1["status"] == "timeout"
+    # Shell is idle after timeout — the next command will be queued
+    # behind the still-running sleep.  Use a longer timeout so it
+    # completes.
+    result2 = session.send("echo ok", wait=True, timeout=3)
+    assert result2["status"] == "completed"
     session.close()
 
 
@@ -218,7 +222,7 @@ def test_close_kills_descendant_subprocesses():
     session = ShellSession(["bash"])
     # Long-running descendant — would previously keep the pipe open.
     session.send("sleep 30", wait=True, timeout=0.2)
-    assert session.state == "running"
+    assert session.state == "idle"  # reset to idle after timeout
 
     drain_thread = session._drain_thread
     assert drain_thread is not None and drain_thread.is_alive()
