@@ -1,10 +1,13 @@
 # Sandbox Environment Manager MCP
 
+<!-- mcp-name: io.github.hs3434/sandbox-env-mcp -->
+
 **Languages**: [English](README.md) · [中文](README.zh.md)
 
 An MCP (Model Context Protocol) server that provides persistent sandbox environment
-management for AI agents. Manages Docker containers and SSH machines as execution
-targets, with shell-based command execution and full file operation capabilities.
+management for AI agents. Manages Docker containers, SSH machines, and WinRM
+remote Windows machines as execution targets, with shell-based command execution
+and full file operation capabilities.
 
 Designed as a replacement for Hermes Agent's built-in terminal/file/code_execution
 tools, adding persistent environment management that the built-in tools lack.
@@ -13,7 +16,7 @@ tools, adding persistent environment management that the built-in tools lack.
 
 - **Compact MCP surface**: 7 exposed tools, with progressive management discovery via `sandbox_env`
 - **Dual transport**: stdio (Hermes child process) or HTTP (independent service)
-- **Multi-backend**: Docker containers (SDK, works with remote daemons) + SSH remote machines
+- **Multi-backend**: Docker containers (SDK, remote daemons) + SSH remote machines + WinRM remote Windows
 - **Persistent machines**: Docker containers survive MCP restart; discover with `docker_ps`
 - **Shell-based execution**: dual-marker confirmation, read for long-running commands
 - **Full file operations**: read, write (atomic), patch (fuzzy match), search (ripgrep/glob)
@@ -105,11 +108,12 @@ restart_max_retry_count = 3
 connect_timeout = 10
 socket_dir_prefix = "sandbox-mcp-ssh-"
 tmpfile_pattern = ".sandbox-mcp-tmp.XXXXXX"
-# Default SSH target for [default_machine] backend = "ssh":
-default_host = ""
-default_user = ""
-default_port = 22
-default_key = ""
+
+# [ssh.targets.{name}] are looked up when [default_machine] backend = "ssh".
+# Targets are defined as inline tables:
+#   [ssh.targets]
+#   my-box = { host = "10.0.0.5", user = "ubuntu" }
+#   win-build = { host = "192.168.1.100", user = "builder", os_type = "windows", shell = "powershell.exe" }
 
 [shell]
 default_max_output = 50000
@@ -124,9 +128,9 @@ default_search_limit = 50
 
 [default_machine]       # opt-in: provision a default machine at startup
 enabled = false         # false = lazy (agent creates its first machine)
-backend = "docker"      # "docker" or "ssh"
-name = "admin"          # defaults to "admin" -> triggers admin mount layout
-purpose = ""            # backend params live in [docker] / [ssh], not here
+backend = "docker"      # "docker", "ssh", or "winrm"
+name = "admin"          # backend params looked up by name (targets / image)
+purpose = ""            # see docs/config.example.toml for details
 ```
 
 Every value can also be overridden via env var (uppercased, dots → underscores), e.g.:
@@ -153,17 +157,14 @@ default machine at startup so the agent can call `sandbox_shell_exec` /
 ```toml
 [default_machine]
 enabled = true
-backend = "docker"     # or "ssh"
+backend = "docker"     # or "ssh", "winrm"
 name = "dev"
 # Docker needs nothing else here -- the image comes from [docker] default_image.
 
-# For SSH, set the target under [ssh] (backend params live in their own
-# section, not under [default_machine]):
-# [ssh]
-# default_host = "10.0.0.5"
-# default_user = "ubuntu"
-# default_port = 22
-# default_key = "/home/ubuntu/.ssh/id_ed25519"
+# For SSH, define the target under [ssh.targets.{name}] (no extra
+# fields needed in [default_machine]):
+# [ssh.targets]
+# dev = { host = "10.0.0.5", user = "ubuntu" }
 ```
 
 Behaviour:
@@ -258,7 +259,7 @@ different machine or is managed as a systemd service.
 
 ## sandbox_env Actions
 
-`sandbox_env` advertises only `help` and `status` by default. Call `action=help` to discover the full action set, or `action=docker_help` / `action=ssh_help` for backend-specific actions:
+`sandbox_env` advertises only `help` and `status` by default. Call `action=help` to discover the full action set, including backend-specific actions for Docker, SSH, and WinRM. Use `action=list_targets` to see pre-configured SSH/WinRM targets.
 
 | namespace | actions |
 |---|---|
@@ -266,7 +267,8 @@ different machine or is managed as a systemd service.
 | General | `machine_list`, `default_set` |
 | Shell | `shell_new`, `shell_list`, `shell_remove` |
 | Docker | `docker_run`, `docker_build`, `docker_commit`, `docker_stop`, `docker_start`, `docker_remove`, `docker_restart`, `docker_ps`, `docker_images`, `docker_image_history`, `docker_inspect`, `docker_logs`, `docker_diff`, `docker_stats` |
-| SSH | `ssh_connect`, `ssh_disconnect`, `ssh_reconnect`, `ssh_remove` |
+| SSH | `ssh_connect`, `ssh_close` |
+| WinRM | `winrm_connect`, `winrm_close` |
 
 `docker_run` is idempotent: if a container with the same name already exists
 (e.g. after an MCP restart), it reattaches instead of failing.
@@ -569,9 +571,73 @@ Pass it as: Authorization: Bearer <token>
 Capture this token and use it for the session.  The server will not
 regenerate it on restart without the file present.
 
+## Windows Support
+
+sandbox-mcp supports three ways to run Windows environments:
+
+### 1. SSH to remote Windows
+
+Connect to any Windows machine with OpenSSH Server installed:
+
+```python
+sandbox_env(action="ssh_connect", params={
+    "name": "win-build",
+    "host": "192.168.1.100",
+    "user": "builder",
+    "os_type": "windows",
+    "shell": "powershell.exe",
+})
+```
+
+The backend auto-reconnects if the SSH connection drops.  Pre-define targets
+in config:
+
+```toml
+[ssh.targets]
+win-build = { host = "192.168.1.100", user = "builder", os_type = "windows", shell = "powershell.exe" }
+```
+
+### 2. WinRM / PowerShell Remoting
+
+For enterprise Windows environments with WinRM enabled:
+
+```python
+sandbox_env(action="winrm_connect", params={
+    "name": "win-server",
+    "host": "windows-prod.contoso.com",
+    "user": "CONTOSO\\builder",
+    "password": "...",
+})
+```
+
+Requires `pip install sandbox-mcp[winrm]` (adds `pywinrm`).
+
+### 3. Docker Windows containers
+
+When running sandbox-mcp on a Windows host with Docker Desktop in
+Windows container mode:
+
+```python
+sandbox_env(action="docker_run", params={
+    "name": "winbox",
+    "image": "mcr.microsoft.com/windows/servercore:ltsc2022",
+    "os_type": "windows",
+})
+```
+
+The backend auto-detects Windows images via the image metadata's ``Os`` field
+and selects `powershell.exe` as the default shell.
+
+### Discovering available targets
+
+```python
+sandbox_env(action="list_targets")
+# Returns pre-configured SSH/WinRM targets from config.toml
+```
+
 ## Limitations
 
-- **SSH backend uses key auth only.** Password authentication is not supported in the initial release.
+- **SSH/WinRM backends use key / integrated auth only.** Password authentication is not supported in the initial release.
 - **No PTY / interactive stdin.** Commands run non-interactively. Commands that expect a TTY (vim, ssh password prompts) are not supported.
 - **State is in-memory.** Shell sessions are lost on server restart; re-create with `shell_new`. Containers survive restart and can be reattached via `docker_run` or inspected via `docker_ps`.
 - **Shell auto-restarts on death.** If the agent runs `exit` (or bash dies for any other reason), the next `shell_exec` transparently runs in a fresh bash. The response includes a `bash_pid` field — track it across calls; if it changes, all in-shell state (exports, cwd, background jobs) is gone. Persist any state you need across restarts via files, not env vars.
@@ -603,12 +669,12 @@ sandbox-mcp                     sandbox-mcp-http
   │ AuditLogger / Safety  │
   └──────────┬───────────┘
              │
-     ┌───────┴───────┐
-     ▼               ▼
-  Docker SDK      SSH (subprocess)
-  (put_archive,    (ControlMaster,
-   exec_run,        exec_oneoff,
-   exec socket)     stdin pipe)
+      ┌───────┴───────┬──────────────┐
+      ▼               ▼              ▼
+   Docker SDK      SSH          WinRM (optional)
+   (put_archive,   (ControlMaster, pywinrm,
+    exec_run,       exec_oneoff,   run_ps,
+    exec socket)    stdin pipe)    base64 write)
 ```
 
 ## Design
