@@ -456,7 +456,7 @@ Backend help:       docker_help / ssh_help
 Docker:             docker_run / docker_build / docker_commit
                     docker_stop / docker_start / docker_remove
                     docker_ps / docker_images
-SSH:                ssh_connect / ssh_disconnect / ssh_reconnect / ssh_remove
+SSH:                ssh_connect / ssh_close
 ```
 
 18 actions, 1 management tool in tools/list. Agent loads docs on demand.
@@ -483,9 +483,8 @@ SSH:                ssh_connect / ssh_disconnect / ssh_reconnect / ssh_remove
 - Master socket: `/tmp/sandbox-mcp-ssh-<name>`
 - Shell process: `ssh -o ControlPath=<socket> <user>@<host> bash`
 - ssh_connect: establish ControlMaster connection (key auth only)
-- ssh_disconnect: `ssh -S <socket> -O exit <user>@<host>`
-- ssh_reconnect: re-establish ControlMaster (shells are lost on disconnect)
-- ssh_remove: disconnect + unregister from registry
+- ssh_connect: establish ControlMaster connection (key auth only)
+- ssh_close: disconnect + unregister from registry; auto-reconnects on next use
 - No commit/build support (SSH backend only)
 - No password authentication in v1 (key-based auth via `key` parameter)
 

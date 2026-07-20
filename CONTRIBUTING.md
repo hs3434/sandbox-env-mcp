@@ -121,7 +121,7 @@ faith. Constructive disagreement is welcome; personal attacks are not.
 
 - Search the existing issues first.
 - Use the issue templates when present; otherwise include:
-  - `sandbox-mcp` version (`pip show sandbox-mcp`),
+  - `sandbox-env-mcp` version (`pip show sandbox-env-mcp`),
   - transport (`stdio` / `streamable-http`),
   - OS, Docker daemon version (if relevant), Python version,
   - minimal reproduction steps and observed vs expected behaviour.

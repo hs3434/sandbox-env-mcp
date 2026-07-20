@@ -1,5 +1,7 @@
 # Sandbox 环境管理 MCP 服务器
 
+<!-- mcp-name: io.github.hs3434/sandbox-env-mcp -->
+
 一个提供持久化沙箱环境管理的 MCP（Model Context Protocol）服务器。
 为 AI agent 管理 Docker 容器和 SSH 机器作为执行目标，支持基于 shell 的命令执行和完整的文件操作能力。
 

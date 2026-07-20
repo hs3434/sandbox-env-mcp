@@ -976,8 +976,8 @@ git commit -m "feat: DockerBackend with lifecycle, shell, commit, build"
 - Create: `backends/ssh_backend.py`
 - Test: `tests/test_ssh_backend.py`
 
-SSH backend implements: create (ssh_connect), stop (ssh_disconnect), start
-(ssh_reconnect), remove (ssh_remove), open_shell, exec_oneoff. Uses ControlMaster
+SSH backend implements: create (ssh_connect), close (ssh_close), open_shell,
+exec_oneoff. Uses ControlMaster with auto-reconnect.
 multiplexing.
 
 - [ ] **Step 1: Write failing test (mocked subprocess)**
@@ -1016,7 +1016,7 @@ def test_ssh_stop_disconnects(ssh_backend):
         assert info.status == "stopped"
 
 
-def test_ssh_remove_unregisters(ssh_backend):
+def test_ssh_close_unregisters(ssh_backend):
     ssh_backend._targets["remote"] = {"host": "h", "user": "u", "port": 22}
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout="")
@@ -1954,9 +1954,7 @@ def test_ssh_help_returns_ssh_ops(sandbox_env):
     result = sandbox_env.dispatch("ssh_help", {})
     actions = [op["action"] for op in result["operations"]]
     assert "ssh_connect" in actions
-    assert "ssh_disconnect" in actions
-    assert "ssh_reconnect" in actions
-    assert "ssh_remove" in actions
+    assert "ssh_close" in actions
 
 
 def test_default_set_sets_default_target(sandbox_env):
@@ -2171,22 +2169,10 @@ SSH_HELP_RESPONSE = {
             "example": {"name": "remote", "host": "192.168.1.100", "user": "ubuntu", "purpose": "Remote server"},
         },
         {
-            "action": "ssh_disconnect",
-            "description": "Close SSH connection. Remote machine is not affected.",
+            "action": "ssh_close",
+            "description": "Close SSH connection and unregister the machine.",
             "required": {"machine": "string"},
-            "returns": {"machine": "string", "status": "stopped"},
-        },
-        {
-            "action": "ssh_reconnect",
-            "description": "Re-establish SSH connection. Shells are lost on disconnect.",
-            "required": {"machine": "string"},
-            "returns": {"machine": "string", "status": "running"},
-        },
-        {
-            "action": "ssh_remove",
-            "description": "Unregister SSH machine. Remote machine is not affected.",
-            "required": {"machine": "string"},
-            "returns": {"machine": "string", "status": "removed"},
+            "returns": {"machine": "string", "status": "closed"},
         },
     ]
 }
@@ -2371,44 +2357,12 @@ class SandboxEnv:
         )
         return {"name": info.name, "status": info.status, "backend": "ssh"}
 
-    def _op_ssh_disconnect(self, params):
-        ok, err = self._require(params, "machine")
-        if err:
-            return {"error": err}
-        machine = self._targets.resolve_target(params["machine"])
-        backend = self._targets.get_backend(machine)
-        from sandbox_mcp.backends.ssh_backend import SSHBackend
-        if not isinstance(backend, SSHBackend):
-            return {"error": "ssh_disconnect only supported on SSH machines"}
-        self._shells.close_all_for_target(machine)
-        info = backend.stop(machine)
-        return {"machine": machine, "status": info.status}
-
-    def _op_ssh_reconnect(self, params):
-        ok, err = self._require(params, "machine")
-        if err:
-            return {"error": err}
-        machine = self._targets.resolve_target(params["machine"])
-        backend = self._targets.get_backend(machine)
-        from sandbox_mcp.backends.ssh_backend import SSHBackend
-        if not isinstance(backend, SSHBackend):
-            return {"error": "ssh_reconnect only supported on SSH machines"}
-        info = backend.start(machine)
-        return {"machine": machine, "status": info.status}
-
-    def _op_ssh_remove(self, params):
-        ok, err = self._require(params, "machine")
-        if err:
-            return {"error": err}
-        machine = self._targets.resolve_target(params["machine"])
-        backend = self._targets.get_backend(machine)
-        from sandbox_mcp.backends.ssh_backend import SSHBackend
-        if not isinstance(backend, SSHBackend):
-            return {"error": "ssh_remove only supported on SSH machines"}
-        self._shells.close_all_for_target(machine)
-        result = backend.remove(machine)
-        self._targets.unregister(machine)
-        return result
+    @_with_resolved("_resolve_ssh_machine", "ssh_close")
+    def _op_ssh_close(self, params, machine, backend):
+        self._shells.close_all_for_machine(machine)
+        backend.remove(machine)
+        self._machines.unregister(machine)
+        return {"machine": machine, "status": "closed", "backend": "ssh"}
 ```
 
 - [ ] **Step 4: Run tests**
@@ -2957,7 +2911,7 @@ git commit -m "test: integration tests for Docker backend with shell_exec and sa
 - [x] I/O merged (stderr=STDOUT) -- Task 2
 - [x] shell_read from in-memory buffer, detects markers -- Task 2
 - [x] Manual cleanup, shell_list hints for terminated -- Task 7
-- [x] Backend-specialized lifecycle (docker_stop/ssh_disconnect) -- Task 4, 5, 10
+- [x] Backend-specialized lifecycle (docker_stop/ssh_close) -- Task 4, 5, 10
 - [x] sandbox_env 18 actions with progressive discovery -- Task 10
 - [x] sandbox_env inputSchema (~100 tokens) -- Task 11
 - [x] Core 6 tools + sandbox_env = 7 tools in tools/list -- Task 11
