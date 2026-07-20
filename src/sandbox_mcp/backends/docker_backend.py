@@ -1341,7 +1341,7 @@ class DockerBackend(Backend):
             provider = ShellProviderFactory.create("linux")
         try:
             exit_code, output = container.exec_run(
-                cmd=[*provider.default_shell_args, command],
+                cmd=[*provider.default_shell_args, provider.exec_flag, command],
                 stdout=True,
                 stderr=True,
                 demux=False,
