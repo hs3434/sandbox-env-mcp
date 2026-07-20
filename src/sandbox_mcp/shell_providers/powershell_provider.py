@@ -11,7 +11,13 @@ class PowerShellProvider(ShellProvider):
     -NonInteractive`` (interactive stdin) or with ``exec_flag`` ``-Command``
     for one-off execution.  Paths are single-quoted to avoid
     variable-expansion issues.
+
+    *encoding* is the system's active code page (``gbk`` for Chinese
+    Windows, ``shift-jis`` for Japanese, etc.).  Defaults to ``gbk``.
     """
+
+    def __init__(self, encoding: str = "gbk"):
+        self._encoding = encoding
 
     @property
     def default_shell(self) -> str:
@@ -27,7 +33,7 @@ class PowerShellProvider(ShellProvider):
 
     @property
     def input_encoding(self) -> str:
-        return "gbk"
+        return self._encoding
 
     @property
     def setup_command(self) -> str:

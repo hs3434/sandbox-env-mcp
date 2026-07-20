@@ -149,7 +149,7 @@ class ShellProviderFactory:
         cls._providers[os_type] = provider_cls
 
     @classmethod
-    def create(cls, os_type: str) -> ShellProvider:
+    def create(cls, os_type: str, **kwargs) -> ShellProvider:
         if not cls._providers:
             from sandbox_mcp.shell_providers.bash_provider import BashShellProvider
             from sandbox_mcp.shell_providers.powershell_provider import PowerShellProvider
@@ -163,4 +163,4 @@ class ShellProviderFactory:
                 f"Unknown OS type: {os_type!r}. "
                 f"Available: {list(cls._providers)}"
             )
-        return provider_cls()
+        return provider_cls(**kwargs)

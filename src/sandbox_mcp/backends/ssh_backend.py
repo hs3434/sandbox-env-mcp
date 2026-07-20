@@ -121,7 +121,7 @@ class SSHBackend(Backend):
 
         # Stale — try reconnect.  Machine stays registered regardless
         # of outcome so the agent can see the "disconnected" status.
-        keys = {"host", "user", "port", "key", "os_type"}
+        keys = {"host", "user", "port", "key", "os_type", "encoding"}
         self.create(name, **{k: v for k, v in target.items() if k in keys})
 
     def _ssh_base_args(self, name):
@@ -187,26 +187,29 @@ class SSHBackend(Backend):
             err = result.stderr.strip() or f"ssh connection to {user}@{host}:{port} failed (exit {result.returncode})"
             return TargetInfo(name=name, backend="ssh", status="error", purpose=purpose,
                               error=err)
+        encoding = kwargs.get("encoding", "gbk")
         self._targets[name] = {
             "host": host,
             "user": user,
             "port": port,
             "key": key,
             "os_type": kwargs.get("os_type", "linux"),
+            "encoding": encoding,
             "socket": self._socket_path(name),
             "socket_dir": self._socket_dir(name),
             "purpose": purpose,
             "started_at": time.time(),
         }
         os_type = kwargs.get("os_type", "linux")
-        self._provider[name] = ShellProviderFactory.create(os_type)
+        provider_kwargs = {"encoding": encoding} if os_type == "windows" else {}
+        self._provider[name] = ShellProviderFactory.create(os_type, **provider_kwargs)
         self._shell[name] = kwargs.get("shell", "powershell.exe" if os_type == "windows" else "bash")
         return TargetInfo(name=name, backend="ssh", status="running", purpose=purpose)
 
     def start(self, name):
         """Reconnect SSH ControlMaster."""
         target = self._targets.get(name, {})
-        keys = {"host", "user", "port", "key", "os_type"}
+        keys = {"host", "user", "port", "key", "os_type", "encoding"}
         return self.create(
             name, **{k: v for k, v in target.items() if k in keys}
         )

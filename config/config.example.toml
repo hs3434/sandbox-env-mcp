@@ -136,7 +136,7 @@ tmpfile_pattern = ".sandbox-mcp-tmp.XXXXXX"
 # ssh_connect.
 [ssh.targets]
 # Example:
-#   win-build = { host = "192.168.1.100", user = "builder", os_type = "windows", shell = "powershell.exe" }
+#   win-build = { host = "192.168.1.100", user = "builder", os_type = "windows", shell = "powershell.exe", encoding = "gbk" }
 
 [winrm]
 # Default WinRM connection parameters.
