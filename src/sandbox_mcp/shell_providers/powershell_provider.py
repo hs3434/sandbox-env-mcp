@@ -27,7 +27,11 @@ class PowerShellProvider(ShellProvider):
 
     @property
     def setup_command(self) -> str:
-        return "[Console]::OutputEncoding = [Text.Encoding]::UTF8"
+        return (
+            "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+            "$OutputEncoding = [Text.Encoding]::UTF8; "
+            "$PSDefaultParameterValues['*:Encoding']='utf8'"
+        )
 
     @staticmethod
     def _esc(path: str) -> str:
