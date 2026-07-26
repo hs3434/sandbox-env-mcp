@@ -42,16 +42,16 @@ drain thread reads the same stream.
 | Tool | Purpose |
 |---|---|
 | `shell_exec` | Send a command to a shell. `wait=true` blocks (default 10 s), `wait=false` returns immediately. |
-| `sandbox_shell_read` | Read buffered output from a shell (non-blocking). |
-| `sandbox_shell_new` | Open an extra shell on a machine (the default shell is auto-created on first `shell_exec` if missing). |
-| `sandbox_shell_remove` | Terminate and remove a shell (any state). |
-| `sandbox_shell_list` | List all shells with state, machine, is_default, last_command. |
+| `shell_read` | Read buffered output from a shell (non-blocking). |
+| `shell_new` | Open an extra shell on a machine (the default shell is auto-created on first `shell_exec` if missing). |
+| `shell_remove` | Terminate and remove a shell (any state). |
+| `shell_list` | List all shells with state, machine, is_default, last_command. |
 | `sandbox_machine_list` | List all machines with backend, status, shell count, uptime. |
 | `sandbox_default_set` | Set default machine *or* default shell (exactly one of `machine` / `shell_id`). |
-| `sandbox_file_read` | Read a text file with line numbers and pagination. |
-| `sandbox_file_write` | Write a file (atomic, in-process lint for known extensions). |
-| `sandbox_file_patch` | Targeted find-and-replace (replace mode) or unified-diff (patch mode), fuzzy-matched. |
-| `sandbox_file_search` | ripgrep content search + glob file search. |
+| `file_read` | Read a text file with line numbers and pagination. |
+| `file_write` | Write a file (atomic, in-process lint for known extensions). |
+| `file_patch` | Targeted find-and-replace (replace mode) or unified-diff (patch mode), fuzzy-matched. |
+| `file_search` | ripgrep content search + glob file search. |
 | `sandbox_env` | Progressive discovery: `help`, `status`, `list_targets`, `machine_list`, `default_set`, `shell_*`, `docker_*`, `connect`, `close`. |
 | `sandbox_audit_query` | Read the audit log (filtered, paginated). Only present when `[audit] log_path` is set. |
 

@@ -248,10 +248,10 @@ Hermes 连到 HTTP MCP 端点（`/mcp`，即 MCP 规范当前的 "Streamable HTT
 | 工具 | 用途 |
 |---|---|
 | `shell_exec` | 在默认（或指定）shell 上跑命令。`wait=true` 阻塞，默认 10 秒超时。 |
-| `sandbox_shell_read` | 读 shell 缓冲区的输出（非阻塞）。 |
-| `sandbox_shell_new` | 在某台 machine 上额外开一个 shell。 |
-| `sandbox_shell_remove` | 终止并移除一个 shell（任意状态）。 |
-| `sandbox_shell_list` | 列出所有 shell（shell_id / machine / state / is_default / ...）。 |
+| `shell_read` | 读 shell 缓冲区的输出（非阻塞）。 |
+| `shell_new` | 在某台 machine 上额外开一个 shell。 |
+| `shell_remove` | 终止并移除一个 shell（任意状态）。 |
+| `shell_list` | 列出所有 shell（shell_id / machine / state / is_default / ...）。 |
 | `sandbox_machine_list` | 列出所有已注册的 machine（backend / status / shell 数 / uptime）。 |
 | `sandbox_default_set` | 设置默认 machine 或默认 shell。 |
 | `file_read` | 读文本文件，带行号。 |

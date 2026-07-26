@@ -101,7 +101,7 @@ on success the buffer is cleared and state is set to `ready`.  On
   This is the contract that prevents silent re-spawn on a dead
   shell.
 * `list_shells(machine=None)` — projects the registry into the
-  wire-format used by `sandbox_shell_list`, including per-state
+  wire-format used by `shell_list`, including per-state
   hints.
 
 ### `shell_provider.py`
@@ -156,7 +156,7 @@ on success the buffer is cleared and state is set to `ready`.  On
 * `exec_oneoff` — `container.exec_run` with the provider's shell
   args + exec flag.
 * `write_file` — `put_archive` of a tar containing the file into a
-  tmp dir, then `mv -f` into place.  Used by `sandbox_file_write`.
+  tmp dir, then `mv -f` into place.  Used by `file_write`.
 * `inspect`, `logs`, `diff`, `stats`, `history`, `list_images`,
   `list_managed_containers` — direct daemon queries; `inspect`
   has a curated container view (no env values, no NetworkSettings)

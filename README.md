@@ -265,10 +265,10 @@ different machine or is managed as a systemd service.
 | Tool | Purpose |
 |------|---------|
 | `shell_exec` | Execute a shell command on the default (or named) shell. `wait=true` blocks; default timeout 10 s. |
-| `sandbox_shell_read` | Read buffered output from a shell (non-blocking). |
-| `sandbox_shell_new` | Open an additional shell session on a machine. |
-| `sandbox_shell_remove` | Terminate and remove a shell (any state). |
-| `sandbox_shell_list` | List all shells (shell_id, machine, state, is_default, ...). |
+| `shell_read` | Read buffered output from a shell (non-blocking). |
+| `shell_new` | Open an additional shell session on a machine. |
+| `shell_remove` | Terminate and remove a shell (any state). |
+| `shell_list` | List all shells (shell_id, machine, state, is_default, ...). |
 | `sandbox_machine_list` | List all registered machines with backend, status, shell count, uptime. |
 | `sandbox_default_set` | Set the default machine or default shell. |
 | `file_read` | Read a text file with line numbers. |
