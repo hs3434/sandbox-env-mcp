@@ -82,8 +82,9 @@ win-build = { host = "10.100.1.1", user = "hs3434", os_type = "windows", shell =
 | `host` | Windows 机器的 IP 或主机名 |
 | `user` | 登录用户名 |
 | `os_type` | 固定为 `"windows"`，自动选择 PowerShell 命令生成 |
-| `shell` | 固定为 `"powershell.exe"` |
+| `shell` | 固定为 `"powershell.exe"`（默认即可，无需修改） |
 | `key` | 私钥在 sandbox-mcp 容器内的路径 |
+| `encoding` | 可选。控制 sandbox-mcp 解码 PowerShell 输出时尝试的备用编码，默认 `"gbk"`（中文 Windows）。如果你把控制台代码页改成 UTF-8，可显式设为 `"utf-8"`。 |
 
 ### 路径说明
 
@@ -128,7 +129,7 @@ services:
 |------|------|------|
 | `Connection timed out` | IP/端口不可达 | 检查网络、防火墙、sshd 是否运行 |
 | `Permission denied (publickey)` | 密钥认证失败 | 检查 authorized_keys 权限（仅用户+SYSTEM） |
-| `shell died during health check` | PowerShell 启动参数不对 | 确认 `shell = "powershell.exe"` 且 `-Command` 配置正确 |
+| `shell died during health check` | PowerShell 启动失败或回不到 prompt | 检查 `os_type = "windows"`、`shell = "powershell.exe"`，以及远程机器的 OpenSSH Server 与权限 |
 | shell_exec 返回空输出 | 命令执行但无返回 | 确保命令有输出（PowerShell 管道输出） |
 
 更多配置选项见 [config.example.toml](config/config.example.toml)。

@@ -5,23 +5,38 @@
 **Languages**: [English](README.md) · [中文](README.zh.md)
 
 An MCP (Model Context Protocol) server that provides persistent sandbox environment
-management for AI agents. Manages Docker containers, SSH machines, and WinRM
-remote Windows machines as execution targets, with shell-based command execution
-and full file operation capabilities.
+management for AI agents. Manages Docker containers and SSH remote machines
+(including Windows via PowerShell-over-SSH) as execution targets, with shell-based
+command execution and full file operation capabilities.
 
 Designed as a replacement for Hermes Agent's built-in terminal/file/code_execution
 tools, adding persistent environment management that the built-in tools lack.
 
 ## Features
 
-- **Compact MCP surface**: 7 exposed tools, with progressive management discovery via `sandbox_env`
+- **Compact MCP surface**: 12 top-level tools, plus progressive management
+  discovery via `sandbox_env` (and `audit_query` when file-backed)
 - **Dual transport**: stdio (Hermes child process) or HTTP (independent service)
-- **Multi-backend**: Docker containers (SDK, remote daemons) + SSH remote machines + WinRM remote Windows
-- **Persistent machines**: Docker containers survive MCP restart; discover with `docker_ps`
-- **Shell-based execution**: dual-marker confirmation, read for long-running commands
-- **Full file operations**: read, write (atomic), patch (fuzzy match), search (ripgrep/glob)
-- **In-process linters**: Python `ast`, JSON, optional YAML/TOML pre-write validation
-- **Safety advisories**: non-blocking warnings for sensitive paths (`.ssh`, `.aws`, `.env*`)
+- **Multi-backend**: Docker containers (SDK, remote daemons) + SSH remote
+  machines (Linux + Windows). **No WinRM** — Windows support is SSH-only.
+- **Persistent PTY shells**: every backend runs the shell under a real PTY,
+  so interactive programs (pagers, prompts) work naturally
+- **One-shot random Prompt protocol**: each shell installs a single random
+  prompt token at startup (bash `PS1` / PowerShell `prompt` function). No
+  per-command markers — agent commands stream as-is and the drain thread
+  detects completion via the next prompt
+- **Persistent machines**: Docker containers survive MCP restart; discover
+  with `docker_ps`
+- **State machine**: shells are `ready` / `waiting` / `terminated`.
+  `wait=true` (default, 10 s timeout) returns `waiting` on timeout and
+  suggests `wait=false` + `shell_read` for long tasks. `terminated` shells
+  are never auto-replaced — agent calls `shell_remove` then `shell_new`
+- **Full file operations**: read, write (atomic), patch (fuzzy match), search
+  (ripgrep/glob)
+- **In-process linters**: Python `ast`, JSON, optional YAML/TOML pre-write
+  validation
+- **Safety advisories**: non-blocking warnings for sensitive paths (`.ssh`,
+  `.aws`, `.env*`)
 - **Audit logging**: JSON-line stream of all tool invocations (content hashed)
 
 ## Quick Start
@@ -43,7 +58,7 @@ pytest tests/ -m integration -v
 
 sandbox-mcp has two transports:
 
-- **`sandbox-mcp-http`** — standalone HTTP service.  Start it from a shell:
+- **`sandbox-mcp-http`** — standalone HTTP service. Start it from a shell:
   ```bash
   sandbox-mcp-http
   # Then connect any MCP client to http://127.0.0.1:8010/mcp
@@ -100,7 +115,7 @@ log_path = "~/.sandbox-mcp/audit.db"
                         # "" = stderr (sandbox_audit_query hidden); file = query tool enabled
 
 [docker]                # container defaults
-default_image = "debian:stable-slim"
+default_image = "python:3.14-slim"
 restart_policy_name = "on-failure"
 restart_max_retry_count = 3
 
@@ -113,9 +128,10 @@ tmpfile_pattern = ".sandbox-mcp-tmp.XXXXXX"
 # Targets are defined as inline tables:
 #   [ssh.targets]
 #   my-box = { host = "10.0.0.5", user = "ubuntu" }
-#   win-build = { host = "192.168.1.100", user = "builder", os_type = "windows", shell = "powershell.exe" }
+#   win-build = { host = "192.168.1.100", user = "builder", os_type = "windows", encoding = "gbk" }
 
 [shell]
+# Buffer sizes and the default per-call output cap (in bytes).
 default_max_output = 50000
 head_size = 5120
 tail_size = 46080
@@ -127,8 +143,8 @@ max_read_limit = 2000
 default_search_limit = 50
 
 [default_machine]       # opt-in: provision a default machine at startup
-enabled = false         # false = lazy (agent creates its first machine)
-backend = "docker"      # "docker", "ssh", or "winrm"
+enabled = true          # false = lazy (agent creates its first machine)
+backend = "docker"      # "docker" or "ssh"
 name = "admin"          # backend params looked up by name (targets / image)
 purpose = ""            # see docs/config.example.toml for details
 ```
@@ -149,7 +165,7 @@ ever seeing a host path.
 ### Default machine at startup
 
 By default sandbox-mcp is **lazy**: the agent creates its first machine on
-demand with `docker_run` / `ssh_connect`, and there is no default machine
+demand with `docker_run` / `connect`, and there is no default machine
 until it does. Set `[default_machine] enabled = true` to instead provision a
 default machine at startup so the agent can call `sandbox_shell_exec` /
 `sandbox_file_*` immediately:
@@ -157,7 +173,7 @@ default machine at startup so the agent can call `sandbox_shell_exec` /
 ```toml
 [default_machine]
 enabled = true
-backend = "docker"     # or "ssh", "winrm"
+backend = "docker"     # or "ssh"
 name = "dev"
 # Docker needs nothing else here -- the image comes from [docker] default_image.
 
@@ -174,10 +190,10 @@ Behaviour:
 - Provisioning failure is **fatal** (fail-closed): the operator opted in,
   so a missing default machine would surprise the agent at first use. The
   server refuses to start with a clear error instead.
-- `name` defaults to `"admin"`.  When `admin_machine` is enabled and
+- `name` defaults to `"admin"`. When `admin_machine` is enabled and
   `name = "admin"`, `DockerBackend.create` detects the match and applies
   the [admin mount layout](#admin-machine-cross-machine-ops)
-  automatically.  Pick any other name (e.g. `name = "dev"`) to opt out
+  automatically. Pick any other name (e.g. `name = "dev"`) to opt out
   of admin and provision a normal peer as the default.
 - `docker_run` is now **idempotent within a session**: if a container with
   the requested name already exists, it reattaches (starting it if stopped)
@@ -222,7 +238,7 @@ agent:
 ```
 
 Hermes spawns `sandbox-mcp` as a child process and pipes JSON-RPC over
-its stdin/stdout.  The server has no GUI; it just waits for requests.
+its stdin/stdout. The server has no GUI; it just waits for requests.
 
 **HTTP transport** (the `sandbox-mcp-http` command):
 
@@ -241,34 +257,83 @@ agent:
 ```
 
 Hermes connects to the HTTP MCP endpoint (`/mcp`, the current MCP spec
-"Streamable HTTP" transport).  Useful when the MCP server runs on a
+"Streamable HTTP" transport). Useful when the MCP server runs on a
 different machine or is managed as a systemd service.
 
 ## Tools
 
 | Tool | Purpose |
 |------|---------|
-| `sandbox_shell_exec` | Execute a shell command (wait or non-blocking) |
-| `sandbox_shell_read` | Read new output from a shell |
-| `sandbox_file_read` | Read a text file with line numbers |
-| `sandbox_file_write` | Write a file (auto mkdir, syntax check, atomic) |
-| `sandbox_file_patch` | Targeted edit with fuzzy match |
-| `sandbox_file_search` | Ripgrep content search + glob file search |
-| `sandbox_env` | Progressive discovery: `default_set`, `shell_*`, `docker_*`, `ssh_*` |
-| `sandbox_audit_query` | Read the audit log (filtered, paginated) — only when `[audit] log_path` is set |
+| `sandbox_shell_exec` | Execute a shell command on the default (or named) shell. `wait=true` blocks; default timeout 10 s. |
+| `sandbox_shell_read` | Read buffered output from a shell (non-blocking). |
+| `sandbox_shell_new` | Open an additional shell session on a machine. |
+| `sandbox_shell_remove` | Terminate and remove a shell (any state). |
+| `sandbox_shell_list` | List all shells (shell_id, machine, state, is_default, ...). |
+| `sandbox_machine_list` | List all registered machines with backend, status, shell count, uptime. |
+| `sandbox_default_set` | Set the default machine or default shell. |
+| `sandbox_file_read` | Read a text file with line numbers. |
+| `sandbox_file_write` | Write a file (auto mkdir, syntax check, atomic). |
+| `sandbox_file_patch` | Targeted edit with fuzzy match. |
+| `sandbox_file_search` | Ripgrep content search + glob file search. |
+| `sandbox_env` | Progressive discovery: `default_set`, `shell_*`, `docker_*`, `connect`, `close`, ... |
+| `sandbox_audit_query` | Read the audit log (filtered, paginated) — only when `[audit] log_path` is set. |
+
+### Shell state machine
+
+Each persistent shell is always in one of three states:
+
+| State | Meaning | What you can do |
+|-------|---------|-----------------|
+| `ready` | Sitting at a prompt, no command running. | Send a new command (`shell_exec`), read buffered output (`shell_read`). |
+| `waiting` | A command is running. The drain thread has not yet seen the next prompt. | `shell_read` for incremental output; send the next command only if you really know the shell is idle (the API rejects it with `error="waiting"`). |
+| `terminated` | The underlying shell process exited (`exit`, `kill`, broken pipe, ...). The shell stays in the registry with its last output buffered. | `shell_read` returns the remaining output and `status="terminated"`. To continue working: call `shell_remove` (cleanup) then `shell_new` (fresh shell). The default shell is **never** auto-replaced — the agent must opt in. |
+
+`shell_exec` parameters:
+
+- `wait` (default `true`): block until the shell returns to `ready`.
+- `timeout` (default `10` seconds): how long to wait. On timeout the
+  response is `status="waiting"` with a `hint` recommending `wait=false`
+  + `shell_read` for long-running commands. The shell stays in
+  `waiting` — your command is still running on the target.
+- `max_output` (default `50000` bytes): cap on returned buffered output.
+  Output beyond the cap is returned as the **tail** (last N bytes) with a
+  truncation notice, not head+tail.
+- `shell_id`: target a specific shell. Defaults to the default shell for
+  the machine (lazily created on first call if needed).
+- `machine`: target machine name. Defaults to the default machine.
+
+`shell_read` returns the buffered output along with the current state.
+It is non-blocking and safe to call repeatedly.
+
+### Prompt protocol — one-shot, not per-command
+
+Each shell installs a single random prompt token at startup (no per-command
+markers):
+
+- **Bash**: `unset PROMPT_COMMAND; export PS1='<token>:$?>'`
+- **PowerShell**: a `prompt` function that prints `'<token>:' + $LASTEXITCODE + '>'`
+
+The drain thread scans for that token to detect command completion
+(no PS2 / continuation-prompt detection — the secondary prompt is
+left in place because interactive programs do emit it). Sending a command
+is a single write to stdin: the command followed by `\n`. The agent sees
+plain command output; only the trailing prompt-token line is used by the
+server for state transitions and exit-code capture.
+
+This works for any interactive shell, including shells that emit prompts
+mid-command, pagers, prompts for input, etc.
 
 ## sandbox_env Actions
 
-`sandbox_env` advertises only `help` and `status` by default. Call `action=help` to discover the full action set, including backend-specific actions for Docker, SSH, and WinRM. Use `action=list_targets` to see pre-configured SSH/WinRM targets.
+`sandbox_env` advertises only `help` and `status` by default. Call `action=help` to discover the full action set, including backend-specific actions for Docker and SSH. Use `action=list_targets` to see pre-configured SSH targets.
 
 | namespace | actions |
 |---|---|
-| Discovery | `help`, `status` |
+| Discovery | `help`, `status`, `list_targets` |
 | General | `machine_list`, `default_set` |
 | Shell | `shell_new`, `shell_list`, `shell_remove` |
 | Docker | `docker_run`, `docker_build`, `docker_commit`, `docker_stop`, `docker_start`, `docker_remove`, `docker_restart`, `docker_ps`, `docker_images`, `docker_image_history`, `docker_inspect`, `docker_logs`, `docker_diff`, `docker_stats` |
-| SSH | `ssh_connect`, `ssh_close` |
-| WinRM | `winrm_connect`, `winrm_close` |
+| SSH | `connect`, `close` |
 
 `docker_run` is idempotent: if a container with the same name already exists
 (e.g. after an MCP restart), it reattaches instead of failing.
@@ -276,7 +341,7 @@ different machine or is managed as a systemd service.
 ### Container networking
 
 All containers created by `docker_run` join a shared user-defined bridge
-network (`sandbox-mcp` by default).  This means containers can reach each
+network (`sandbox-mcp` by default). This means containers can reach each
 other by the same name you passed to `docker_run` (DNS-resolvable):
 
 ```python
@@ -291,7 +356,7 @@ sandbox_env(action="docker_run", name="web", image="nginx:latest")
 ```
 
 The network name is configured via `[docker] auto_network` (default
-`"sandbox-mcp"`).  Set it to an empty string to opt out:
+`"sandbox-mcp"`). Set it to an empty string to opt out:
 
 ```toml
 [docker]
@@ -318,7 +383,7 @@ sandbox_env(action="docker_build",
 
 **Sandbox boundary**: `dockerfile` and `context_dir` must live under
 `/workspace/`. Host paths are rejected — the agent cannot reach files
-outside its assigned `work_home/<machine>/`.  And only that subtree is
+outside its assigned `work_home/<machine>/`. And only that subtree is
 bind-mounted to the host, so a file at e.g. `/etc/foo` inside the
 container has no host-side counterpart for the docker daemon to read;
 the build will fail with "context not a directory" even though the
@@ -366,7 +431,7 @@ container:
   `volumes=["/:/host", "/etc:/host-etc"]` are silently dropped.
 - The auto-mounted bind set is **fixed**: the per-machine workspace
   (`work_home/<name>` → `/workspace`, rw) and the inter-container share
-  dir (see below).  There is no per-run mount parameter — agents cannot
+  dir (see below). There is no per-run mount parameter — agents cannot
   reach arbitrary host paths via sandbox-mcp.
 - The agent can run any image and `docker exec` any command *inside*
   the container, but cannot mount arbitrary host paths, cannot read
@@ -375,7 +440,7 @@ container:
 #### Inter-container share directory
 
 Every `docker_run` automatically bind-mounts `work_home/<share_subdir>/`
-(default `_share/`) into the container at `/share/`.  The
+(default `_share/`) into the container at `/share/`. The
 mount spec is fixed at two bind mounts, regardless of how many peer
 containers exist:
 
@@ -397,7 +462,7 @@ ls /share/                                        # discover peers
 **New peers appear automatically.** Because the parent mount covers
 the whole `_share/` tree, the kernel evaluates its contents at
 access time — a peer subdir created on the host *after* the container
-starts is visible to it on the next `ls`.  No container recreation
+starts is visible to it on the next `ls`. No container recreation
 needed.
 
 Disable by setting `[storage] share_subdir = ""` (env:
@@ -412,15 +477,15 @@ isolation, deploy with rootless docker or gVisor (`runsc`).
 #### Admin machine (cross-machine ops)
 
 The **admin machine** is a special container identified purely by
-name.  Two configs collaborate:
+name. Two configs collaborate:
 
 - **`[docker] admin_machine`** (`admin` by default; empty disables) —
-  the **feature flag + name**.  When non-empty, `DockerBackend.create`
+  the **feature flag + name**. When non-empty, `DockerBackend.create`
   detects matching names and applies the god-mode mount layout below.
   When empty, no name triggers it.
 - **`[default_machine] enabled = true`** + `name = "admin"` (the
   default) — drives actual container creation via the existing
-  default-machine machinery.  Set `name` to anything else (e.g.
+  default-machine machinery. Set `name` to anything else (e.g.
   `"dev"`) to opt out of admin and provision a normal peer as default.
 
 Default mount layout (peer container):
@@ -454,14 +519,14 @@ cat /host/_share/bob/log.txt                # read peer's share output
 ```
 
 **Why two mounts:** agents should default to `/workspace` for their own
-work.  Targeting `/host/<peer>/...` makes the cross-machine intent
-explicit and visible in the agent's command history.  Both paths
+work. Targeting `/host/<peer>/...` makes the cross-machine intent
+explicit and visible in the agent's command history. Both paths
 overlap on `work_home/admin/` (same inodes), so writes through either
 path land on the same data.
 
 **WARNING — god-mode container.** `/host` is rw and covers every peer's
-workspace.  Operations there are **irreversible** and can affect
-concurrent peer work.  Use sparingly — prefer peers cleaning their
+workspace. Operations there are **irreversible** and can affect
+concurrent peer work. Use sparingly — prefer peers cleaning their
 own `/workspace` whenever possible.
 
 **Provisioning pattern** — to make admin the initial default:
@@ -476,24 +541,24 @@ name = "admin"            # default — drives the admin container creation
 ```
 
 `default_machine` calls `DockerBackend.create("admin", ...)`, which
-detects the name match and applies the god-mode mount layout.  No
+detects the name match and applies the god-mode mount layout. No
 special-casing in the server startup path.
 
 **Upgrading an existing deployment:** if a container named `admin`
 already exists as a peer (with the per-machine `work_home/admin/`
 mount), remove it first: `docker_remove admin` (or
-`docker rm admin` on the host).  The server will recreate it with the
-admin mount on the next start.  No auto-migration — silent failure
+`docker rm admin` on the host). The server will recreate it with the
+admin mount on the next start. No auto-migration — silent failure
 otherwise.
 
 Disable by setting `[docker] admin_machine = ""` (env:
-`SANDBOX_MCP_DOCKER_ADMIN_MACHINE`).  With it empty, the name `admin`
+`SANDBOX_MCP_DOCKER_ADMIN_MACHINE`). With it empty, the name `admin`
 behaves like any peer (own mount + share, no `/host`).
 
 ### Connecting to a Remote Docker Daemon
 
 By default `sandbox-mcp` talks to the docker daemon at
-`unix:///var/run/docker.sock` (or wherever `$DOCKER_HOST` points).  To
+`unix:///var/run/docker.sock` (or wherever `$DOCKER_HOST` points). To
 point at a remote daemon, set `[docker] host` in `config.toml` (env
 override: `SANDBOX_MCP_DOCKER_HOST`):
 
@@ -511,13 +576,13 @@ cert_path = "/etc/sandbox-mcp/docker-certs"
 # host = "unix:///var/run/docker.sock"
 ```
 
-URL scheme (`unix://` / `tcp://` / `ssh://`) selects transport.  See
+URL scheme (`unix://` / `tcp://` / `ssh://`) selects transport. See
 [`config/config.example.toml`](https://github.com/hs3434/sandbox-env-mcp/blob/main/config/config.example.toml) for all options.
 
 ## HTTP authentication
 
 The HTTP transport (`sandbox-mcp-http`) requires a bearer token
-on every request.  Tokens are stored in a file, one per line:
+on every request. Tokens are stored in a file, one per line:
 
 ```
 ~/.sandbox-mcp/auth_tokens           # default path
@@ -557,7 +622,7 @@ curl -X POST -H "Authorization: Bearer <your-token>" \
 ### Auto-generating a dev token
 
 Set ``auto_generate_if_empty = true`` in the config file or export
-``SANDBOX_MCP_SERVER_AUTO_GENERATE_IF_EMPTY=true``.  If the token file
+``SANDBOX_MCP_SERVER_AUTO_GENERATE_IF_EMPTY=true``. If the token file
 is missing or empty, an ephemeral token is generated at startup and
 printed to stderr:
 
@@ -568,55 +633,47 @@ Generated ephemeral token (capture now, will not be shown again):
 Pass it as: Authorization: Bearer <token>
 ```
 
-Capture this token and use it for the session.  The server will not
+Capture this token and use it for the session. The server will not
 regenerate it on restart without the file present.
 
 ## Windows Support
 
-sandbox-mcp supports three ways to run Windows environments:
+sandbox-mcp supports Windows exclusively over SSH (no WinRM backend
+exists in the project). Two ways to get a Windows target:
 
 ### 1. SSH to remote Windows
 
 Connect to any Windows machine with OpenSSH Server installed.
-See [Windows SSH 配置指南](https://github.com/hs3434/sandbox-env-mcp/blob/main/docs/windows-ssh-guide.md) for detailed setup.
+See [Windows SSH Configuration Guide](https://github.com/hs3434/sandbox-env-mcp/blob/main/docs/windows-ssh-guide.md) for detailed setup.
 
 Pre-define targets in config:
 
 ```toml
 [ssh.targets]
-win-build = { host = "10.100.1.1", user = "builder", os_type = "windows", shell = "powershell.exe", key = "/home/sandbox/.sandbox-mcp/windows_rsa" }
+win-build = { host = "10.100.1.1", user = "builder", os_type = "windows", encoding = "gbk", key = "/home/sandbox/.sandbox-mcp/windows_rsa" }
 ```
+
+Then:
 
 ```python
-connect(name="win-build")
+sandbox_env(action="connect", name="win-build")
 ```
 
-### 2. WinRM / PowerShell Remoting
+`os_type = "windows"` selects the PowerShell provider (which sets
+UTF-8 console encoding, installs the prompt function, and disables
+PSReadLine's continuation prompt). `encoding` defaults to `gbk` for
+Windows code-page compatibility.
 
-For enterprise Windows environments with WinRM enabled:
-
-```python
-sandbox_env(action="winrm_connect", params={
-    "name": "win-server",
-    "host": "windows-prod.contoso.com",
-    "user": "CONTOSO\\builder",
-    "password": "...",
-})
-```
-
-Requires `pip install sandbox-mcp[winrm]` (adds `pywinrm`).
-
-### 3. Docker Windows containers
+### 2. Docker Windows containers
 
 When running sandbox-mcp on a Windows host with Docker Desktop in
 Windows container mode:
 
 ```python
-sandbox_env(action="docker_run", params={
-    "name": "winbox",
-    "image": "mcr.microsoft.com/windows/servercore:ltsc2022",
-    "os_type": "windows",
-})
+sandbox_env(action="docker_run",
+            name="winbox",
+            image="mcr.microsoft.com/windows/servercore:ltsc2022")
+# os_type is auto-detected from the image's Os field
 ```
 
 The backend auto-detects Windows images via the image metadata's ``Os`` field
@@ -626,17 +683,27 @@ and selects `powershell.exe` as the default shell.
 
 ```python
 sandbox_env(action="list_targets")
-# Returns pre-configured SSH/WinRM targets from config.toml
+# Returns pre-configured SSH targets from config.toml
 ```
 
 ## Limitations
 
-- **SSH/WinRM backends use key / integrated auth only.** Password authentication is not supported in the initial release.
-- **No PTY / interactive stdin.** Commands run non-interactively. Commands that expect a TTY (vim, ssh password prompts) are not supported.
-- **State is in-memory.** Shell sessions are lost on server restart; re-create with `shell_new`. Containers survive restart and can be reattached via `docker_run` or inspected via `docker_ps`.
-- **Shell auto-restarts on death.** If the agent runs `exit` (or bash dies for any other reason), the next `shell_exec` transparently runs in a fresh bash. The response includes a `bash_pid` field — track it across calls; if it changes, all in-shell state (exports, cwd, background jobs) is gone. Persist any state you need across restarts via files, not env vars.
-  - The **first response after restart** also carries a one-shot `previous_shell` snapshot (`previous_bash_pid`, `last_command`, `exit_reason`, `exit_code`); act on it then — it won't appear again.  (These fields are deliberately not surfaced in the tool description — agents discover them from the response itself, which keeps the per-session tool-list context cost down.)
-- **No built-in session isolation.** Multiple agents connecting to the same server share the same machine/shell registry. This matches Hermes's own MCP behavior.
+- **No WinRM.** Remote Windows is SSH-only (OpenSSH Server on the
+  Windows host).
+- **Backends**: Docker and SSH only. No local-backend or in-process
+  pseudo-target — but the local PTY code path is exercised by tests and
+  by SSH tunnels that loop back to the same machine.
+- **Persistent shells use a PTY.** Works correctly for both bash and
+  PowerShell (over SSH), as well as any interactive shell on the target.
+- **State is in-memory.** Shell sessions are lost on server restart;
+  re-create with `shell_new`. Containers survive restart and can be
+  reattached via `docker_run` or inspected via `docker_ps`.
+- **Terminated shells are preserved** (not auto-replaced). Remove with
+  `shell_remove`, then create a new shell with `shell_new`. To switch
+  to an existing alive shell, use `default_set(shell_id=...)`.
+- **No built-in session isolation.** Multiple agents connecting to the
+  same server share the same machine/shell registry. This matches
+  Hermes's own MCP behavior.
 
 ## Architecture Overview
 
@@ -655,7 +722,7 @@ sandbox-mcp                     sandbox-mcp-http
              ▼
       Application Layer
   ┌──────────────────────┐
-  │ 7 MCP tools          │
+  │ 12 MCP tools + env   │
   │ sandbox_env dispatcher│
   │ ShellSession / ShellReg│
   │ MachineRegistry       │
@@ -663,18 +730,23 @@ sandbox-mcp                     sandbox-mcp-http
   │ AuditLogger / Safety  │
   └──────────┬───────────┘
              │
-      ┌───────┴───────┬──────────────┐
-      ▼               ▼              ▼
-   Docker SDK      SSH          WinRM (optional)
-   (put_archive,   (ControlMaster, pywinrm,
-    exec_run,       exec_oneoff,   run_ps,
-    exec socket)    stdin pipe)    base64 write)
+      ┌──────┴───────┐
+      ▼              ▼
+   Docker SDK     SSH (key-only)
+   (SDK exec,     (ControlMaster,
+    tty=True)      ssh -tt, PTY)
 ```
+
+All three shell types — local PTY (used by tests), Docker exec
+(`tty=True`), and SSH (`ssh -tt`) — run the shell under a real PTY and
+share the same `ShellSession` drain-thread logic. The Prompt protocol
+(token + prompt function) is installed once at startup; per-command
+markers are not used.
 
 ## Design
 
 See [docs/design-spec-v2.md](https://github.com/hs3434/sandbox-env-mcp/blob/main/docs/design-spec-v2.md) for the current design specification.
-See [docs/implementation-plan.md](https://github.com/hs3434/sandbox-env-mcp/blob/main/docs/implementation-plan.md) for the TDD implementation plan.
+See [docs/implementation-plan.md](https://github.com/hs3434/sandbox-env-mcp/blob/main/docs/implementation-plan.md) for the implementation notes.
 
 ## License
 

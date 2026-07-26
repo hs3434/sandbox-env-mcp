@@ -50,11 +50,10 @@ HELP_RESPONSE = {
     "operations": [
         {
             "action": "list_targets",
-            "summary": "List pre-defined SSH and WinRM targets from config.",
+            "summary": "List pre-defined SSH targets from config.",
             "description": (
-                "Returns pre-configured targets defined in "
-                "config.toml under [ssh.targets.*] and [winrm.targets.*]. "
-                "Each entry includes its backend type (ssh or winrm). "
+                "Returns pre-configured targets defined in config.toml under "
+                "[ssh.targets.*]. Each entry includes backend type ssh. "
                 "Use connect(name) to connect to a target."
             ),
             "example": {},
@@ -412,14 +411,13 @@ TARGET_HELP_RESPONSE = {
             "summary": "Connect to a target machine by name (reads params from config).",
             "description": (
                 "Connect to a pre-defined target machine.  The target must be "
-                "defined in [ssh.targets.{name}] or [winrm.targets.{name}] in "
-                "config.toml.  Use list_targets to discover available machines."
+                "defined in [ssh.targets.{name}] in config.toml. "
             ),
             "required": {"name": "string — target name from list_targets"},
             "returns": {
                 "name": "string",
                 "status": "connected | error",
-                "backend": "ssh | winrm",
+                "backend": "ssh",
             },
             "example": {"name": "win-build"},
         },
@@ -484,12 +482,11 @@ def _with_resolved(resolver_attr: str, action: str):
 class SandboxEnv:
     """Dispatches sandbox_env actions and generates help responses."""
 
-    def __init__(self, targets, shells, docker_backend, ssh_backend, winrm_backend=None):
+    def __init__(self, targets, shells, docker_backend, ssh_backend):
         self._machines = targets
         self._shells = shells
         self._docker = docker_backend
         self._ssh = ssh_backend
-        self._winrm = winrm_backend
 
     def dispatch(self, action: str, params: dict) -> Any:
         handler = getattr(self, f"_op_{action}", None)
@@ -512,7 +509,7 @@ class SandboxEnv:
         all_ops: list[dict] = []
         all_ops.extend(HELP_RESPONSE["operations"])
         all_ops.extend(DOCKER_HELP_RESPONSE["operations"])
-        if cfg.ssh.targets or cfg.winrm.targets:
+        if cfg.ssh.targets:
             all_ops.extend(TARGET_HELP_RESPONSE["operations"])
 
         topic = params.get("topic")
@@ -584,13 +581,8 @@ class SandboxEnv:
         }
 
     def _op_list_targets(self, params):
-        """List pre-defined SSH and WinRM targets from config, each with its backend type."""
         cfg = _load_config()
-        targets = {}
-        for name, t in cfg.ssh.targets.items():
-            targets[name] = {**t, "backend": "ssh"}
-        for name, t in cfg.winrm.targets.items():
-            targets[name] = {**t, "backend": "winrm"}
+        targets = {name: {**target, "backend": "ssh"} for name, target in cfg.ssh.targets.items()}
         return {"targets": targets}
 
     # ---- general ----
@@ -625,8 +617,6 @@ class SandboxEnv:
         """
         return self._resolve_machine_of_type(params, action, DockerBackend, "Docker")
 
-
-
     def _op_default_set(self, params):
         has_machine = "machine" in params
         has_shell = "shell_id" in params
@@ -648,14 +638,18 @@ class SandboxEnv:
         session = backend.open_shell(machine)
         shell_id = self._shells.open(machine, session, purpose=params.get("purpose", "manual"))
         # Surface the shell's live state so the agent can see whether
-        # the new session is idle and ready, or already busy — without
-        # having to call shell_list right after creation.
+        # the new session is ready at a prompt or already waiting on a
+        # running command — without having to call shell_list right
+        # after creation.
         result: dict[str, Any] = {
             "shell_id": shell_id,
             "machine": machine,
             "state": session.state,
         }
-        if session.state in ("busy", "running"):
+        # bash_pid is only useful when a command is actually in flight
+        # (state='waiting'); a freshly ready session sitting at a prompt
+        # does not need it surfaced.
+        if session.state == "waiting":
             result["bash_pid"] = session.bash_pid
         return result
 
@@ -881,12 +875,7 @@ class SandboxEnv:
     # ---- Connect / Close (unified, reads target params from config) ----
 
     def _op_connect(self, params):
-        """Connect to a target machine by name (reads params from config).
-
-        The target must be defined in ``[ssh.targets.{name}]`` or
-        ``[winrm.targets.{name}]``.  Use ``list_targets`` to discover
-        available machines.
-        """
+        """Connect to a configured SSH target machine by name."""
         name = params.get("name", "")
         if not name:
             return {"error": "name is required"}
@@ -902,16 +891,6 @@ class SandboxEnv:
                 self._shells.get_or_create_default(name, lambda: self._ssh.open_shell(name))
             return result
 
-        target = cfg.winrm.targets.get(name)
-        if target:
-            if self._winrm is None:
-                return {"error": "WinRM backend not available (install pywinrm)"}
-            info = self._machines.register(name, self._winrm, **target)
-            result = {"name": info.name, "status": info.status, "backend": "winrm"}
-            if info.error:
-                result["error"] = info.error
-            return result
-
         return {"error": f"Unknown target: {name!r}. Use list_targets to see available machines."}
 
     def _op_close(self, params):
@@ -924,5 +903,8 @@ class SandboxEnv:
         self._shells.close_all_for_machine(machine)
         backend.remove(machine)
         self._machines.unregister(machine)
-        return {"name": machine, "status": "closed",
-                "hint": f"Reconnect with connect(name={machine!r}) if needed."}
+        return {
+            "name": machine,
+            "status": "closed",
+            "hint": f"Reconnect with connect(name={machine!r}) if needed.",
+        }

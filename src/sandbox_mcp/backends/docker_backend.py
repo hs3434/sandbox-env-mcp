@@ -252,11 +252,12 @@ class DockerExecProcess:
     def __init__(self, container, cmd):
         self._container = container
         exec_id = container.client.api.exec_create(
-            container.id,
-            cmd,
+            container=container.id,
+            cmd=cmd,
             stdin=True,
             stdout=True,
             stderr=True,
+            tty=True,
         )["Id"]
         # Private form used by exec_inspect / kill paths; public alias so
         # ShellSession.bash_pid can surface a stable process identifier.
@@ -312,42 +313,35 @@ class DockerExecProcess:
         import struct
 
         sock = self._sock
-        sock._sock.settimeout(300)  # 5 min idle timeout
+        sock._sock.settimeout(300)
         out_fd = self._stdout_w_fd
+        carry = b""
         try:
             while True:
-                header = b""
                 try:
-                    while len(header) < 8:
-                        chunk = sock.read(8 - len(header))
-                        # Defense in depth: a broken/truncated socket (or a
-                        # test mock that returns a non-bytes object) would
-                        # otherwise spin here forever — ``b"" + MagicMock``
-                        # returns a MagicMock via __radd__, never raising,
-                        # so the inner ``except (OSError, AttributeError)``
-                        # never fires.  Bail cleanly so ``_done`` gets set.
-                        if not isinstance(chunk, (bytes, bytearray)):
-                            return
-                        if not chunk:
-                            return
-                        header += chunk
+                    data = sock.read(4096)
                 except (OSError, AttributeError):
                     return
-                payload_len = struct.unpack(">I", header[4:8])[0]
-                payload = b""
-                try:
-                    while len(payload) < payload_len:
-                        chunk = sock.read(payload_len - len(payload))
-                        if not isinstance(chunk, (bytes, bytearray)):
-                            return
-                        if not chunk:
-                            break
-                        payload += chunk
-                except (OSError, AttributeError):
+                if not isinstance(data, (bytes, bytearray)) or not data:
                     return
-                if header[0] == 1:
-                    os.write(out_fd, payload)
-                # stderr (2) is merged per subprocess.STDOUT convention.
+                combined = carry + data
+                carry = b""
+                offset = 0
+                while offset + 8 <= len(combined):
+                    stream_type = combined[offset]
+                    if stream_type not in (1, 2):
+                        os.write(out_fd, combined[offset:])
+                        offset = len(combined)
+                        break
+                    size = struct.unpack(">I", combined[offset + 4 : offset + 8])[0]
+                    if offset + 8 + size > len(combined):
+                        carry = combined[offset:]
+                        break
+                    if stream_type == 1:
+                        os.write(out_fd, combined[offset + 8 : offset + 8 + size])
+                    offset += 8 + size
+                if offset >= len(combined):
+                    offset = 0
         finally:
             os.close(out_fd)
             self._done.set()

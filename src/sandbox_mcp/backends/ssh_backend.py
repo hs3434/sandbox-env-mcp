@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import shlex
 import shutil
 import subprocess
 import tempfile
@@ -28,6 +27,10 @@ import time
 
 from sandbox_mcp.backends.base import Backend, TargetInfo
 from sandbox_mcp.config import load as _load_config
+from sandbox_mcp.encoding_utils import (
+    EncodingInfo,
+    probe_remote_encoding,
+)
 from sandbox_mcp.shell_provider import ShellProvider, ShellProviderFactory
 from sandbox_mcp.shell_session import ShellSession
 
@@ -39,38 +42,22 @@ def _find_ssh():
     return p
 
 
-def _decode_powershell_output(text: str) -> str:
-    """Detect and fix encoding issues in PowerShell output.
+def _probe_ssh_encoding(args_for_ssh: list[str], *, fallback: str = "gbk") -> EncodingInfo:
+    """Probe a remote Windows host's native console encoding.
 
-    PowerShell 5.1 has two common encoding problems over SSH:
-
-    1. **UTF-16LE**: When piped through SSH, PowerShell outputs UTF-16LE
-       which ``subprocess`` (decoding as UTF-8) renders as interleaved
-       ``\\x00`` bytes.
-
-    2. **ANSI/GBK**: When the system's active code page is not UTF-8
-       (Chinese Windows = GBK 936), external programs (Python, chcp, etc.)
-       output ANSI bytes that ``subprocess`` reads as UTF-8 and renders
-       as garbled CJK characters.
+    The probe asks the host for its real ``[Console]::OutputEncoding``
+    / ``[Console]::InputEncoding`` — it does NOT issue ``chcp 65001``
+    or rewrite the OutputEncoding.  Anything missing falls back to
+    *fallback* with ``source="config"`` / ``"default"`` so operators
+    can see why a fallback was used.
     """
-    if "\x00" in text:
-        try:
-            raw = text.encode("utf-8", errors="replace")
-            return raw.decode("utf-16-le", errors="replace").strip("\x00")
-        except Exception:
-            return text
+    ssh_args = [str(a) for a in args_for_ssh if str(a) not in {"true"}]
+    return probe_remote_encoding(ssh_args, fallback_encoding=fallback)
 
-    # Try GBK/ANSI if it reduces replacement chars (GBK bytes misread as UTF-8).
-    if "\ufffd" in text:
-        try:
-            raw = text.encode("utf-8", errors="replace")
-            decoded = raw.decode("gbk", errors="replace")
-            if decoded.count("\ufffd") < text.count("\ufffd"):
-                return decoded
-        except Exception:
-            pass
 
-    return text
+def _decode_bytes(data: bytes, codec: str) -> str:
+    """Decode *data* with *codec*, replacing undecodable bytes."""
+    return data.decode(codec, errors="replace")
 
 
 class SSHBackend(Backend):
@@ -154,6 +141,7 @@ class SSHBackend(Backend):
         user = kwargs.get("user", "")
         port = kwargs.get("port", 22)
         key = kwargs.get("key")
+        os_type = kwargs.get("os_type", "linux")
         connect_timeout = _load_config().ssh.connect_timeout
 
         cmd = [
@@ -178,41 +166,122 @@ class SSHBackend(Backend):
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         except subprocess.TimeoutExpired:
-            return TargetInfo(name=name, backend="ssh", status="error", purpose=purpose,
-                              error=f"SSH connection to {user}@{host}:{port} timed out")
+            return TargetInfo(
+                name=name,
+                backend="ssh",
+                status="error",
+                purpose=purpose,
+                error=f"SSH connection to {user}@{host}:{port} timed out",
+            )
         except FileNotFoundError:
-            return TargetInfo(name=name, backend="ssh", status="error", purpose=purpose,
-                              error="ssh binary not found on PATH")
+            return TargetInfo(
+                name=name,
+                backend="ssh",
+                status="error",
+                purpose=purpose,
+                error="ssh binary not found on PATH",
+            )
         if result.returncode != 0:
-            err = result.stderr.strip() or f"ssh connection to {user}@{host}:{port} failed (exit {result.returncode})"
-            return TargetInfo(name=name, backend="ssh", status="error", purpose=purpose,
-                              error=err)
-        encoding = kwargs.get("encoding", "gbk")
+            err = (
+                result.stderr or ""
+            ).strip() or f"ssh connection to {user}@{host}:{port} failed (exit {result.returncode})"
+            return TargetInfo(name=name, backend="ssh", status="error", purpose=purpose, error=err)
+
+        encoding_info = self._resolve_encoding(name, **kwargs)
+        encoding = encoding_info.output_encoding
+
         self._targets[name] = {
             "host": host,
             "user": user,
             "port": port,
             "key": key,
-            "os_type": kwargs.get("os_type", "linux"),
+            "os_type": os_type,
             "encoding": encoding,
+            "input_encoding": encoding_info.input_encoding,
+            "output_encoding": encoding_info.output_encoding,
+            "input_codepage": encoding_info.input_codepage,
+            "output_codepage": encoding_info.output_codepage,
+            "encoding_source": encoding_info.source,
             "socket": self._socket_path(name),
             "socket_dir": self._socket_dir(name),
             "purpose": purpose,
             "started_at": time.time(),
         }
-        os_type = kwargs.get("os_type", "linux")
-        provider_kwargs = {"encoding": encoding} if os_type == "windows" else {}
+        provider_kwargs = (
+            {
+                "input_encoding": encoding_info.input_encoding,
+                "output_encoding": encoding_info.output_encoding,
+            }
+            if os_type == "windows"
+            else {}
+        )
         self._provider[name] = ShellProviderFactory.create(os_type, **provider_kwargs)
-        self._shell[name] = kwargs.get("shell", "powershell.exe" if os_type == "windows" else "bash")
+        self._shell[name] = kwargs.get(
+            "shell", "powershell.exe" if os_type == "windows" else "bash"
+        )
         return TargetInfo(name=name, backend="ssh", status="running", purpose=purpose)
+
+    def _resolve_encoding(self, name: str, **kwargs) -> EncodingInfo:
+        """Pick codecs for *name*: probe when remote is Windows,
+        config-overridable, fall back to defaults on failure.
+
+        * ``os_type != "windows"`` → utf-8 on both sides, source
+          ``"default"`` (no probe is even attempted).
+        * ``os_type == "windows"`` + probe succeeds → use probe, source
+          ``"probe"``.
+        * ``os_type == "windows"`` + probe fails + explicit
+          ``encoding=`` in kwargs → use it, source ``"config"``.
+        * ``os_type == "windows"`` + probe fails + no explicit
+          encoding → ``gbk`` on both sides, source ``"default"``.
+        """
+        os_type = kwargs.get("os_type", "linux")
+
+        if os_type != "windows":
+            return EncodingInfo(
+                input_encoding="utf-8",
+                output_encoding="utf-8",
+                source="default",
+            )
+
+        target = self._targets.get(name) or {}
+        probe_args = [
+            self._ssh,
+            "-S",
+            self._socket_path(name),
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            f"ConnectTimeout={_load_config().ssh.connect_timeout}",
+            "-p",
+            str(target.get("port") or kwargs.get("port") or 22),
+        ]
+        key = target.get("key") or kwargs.get("key")
+        if key:
+            probe_args += ["-i", str(key)]
+        probe_args.append(
+            f"{target.get('user') or kwargs.get('user', '')}"
+            f"@{target.get('host') or kwargs.get('host', '')}"
+        )
+        fallback = str(kwargs.get("encoding") or "gbk")
+
+        info = _probe_ssh_encoding(probe_args, fallback=fallback)
+        if info.source == "probe":
+            return info
+        # Probe failed — explicitly respect an operator-provided encoding
+        explicit = kwargs.get("encoding")
+        if explicit:
+            return EncodingInfo(
+                input_encoding=explicit,
+                output_encoding=explicit,
+                source="config",
+            )
+        return info
 
     def start(self, name):
         """Reconnect SSH ControlMaster."""
         target = self._targets.get(name, {})
         keys = {"host", "user", "port", "key", "os_type", "encoding"}
-        return self.create(
-            name, **{k: v for k, v in target.items() if k in keys}
-        )
+        return self.create(name, **{k: v for k, v in target.items() if k in keys})
 
     def stop(self, name):
         """Close the SSH master connection."""
@@ -272,23 +341,35 @@ class SSHBackend(Backend):
             )
             if check.returncode == 0:
                 return TargetInfo(
-                    name=name, backend="ssh", status="running",
+                    name=name,
+                    backend="ssh",
+                    status="running",
                     purpose=target.get("purpose", ""),
                 )
             # Socket exists but is stale -> connection dropped.
             return TargetInfo(
-                name=name, backend="ssh", status="disconnected",
+                name=name,
+                backend="ssh",
+                status="disconnected",
                 purpose=target.get("purpose", ""),
                 error="SSH connection dropped. Next operation will auto-reconnect.",
             )
         except FileNotFoundError:
-            return TargetInfo(name=name, backend="ssh", status="error",
-                              purpose=target.get("purpose", ""),
-                              error="ssh binary not found")
+            return TargetInfo(
+                name=name,
+                backend="ssh",
+                status="error",
+                purpose=target.get("purpose", ""),
+                error="ssh binary not found",
+            )
         except subprocess.TimeoutExpired:
-            return TargetInfo(name=name, backend="ssh", status="disconnected",
-                              purpose=target.get("purpose", ""),
-                              error="SSH socket check timed out")
+            return TargetInfo(
+                name=name,
+                backend="ssh",
+                status="disconnected",
+                purpose=target.get("purpose", ""),
+                error="SSH socket check timed out",
+            )
 
     def open_shell(self, name):
         self._ensure_alive(name)
@@ -296,51 +377,85 @@ class SSHBackend(Backend):
         if dead:
             raise RuntimeError(dead["hint"])
         provider = self._provider.get(name, ShellProviderFactory.create("linux"))
-        shell_args = [*self._ssh_base_args(name), *provider.default_shell_args]
+        if provider.default_shell == "powershell.exe":
+            shell_args = [
+                *self._ssh_base_args(name),
+                *provider.default_shell_args,
+                "-NoExit",
+                "-Command",
+                "-",
+            ]
+        else:
+            interactive_args = [a for a in provider.default_shell_args if a != "-NonInteractive"]
+            shell_args = [*self._ssh_base_args(name), "-tt", *interactive_args]
         return ShellSession(shell_args, provider=provider)
 
     def _check_alive(self, name):
         """Return None if alive, or an error dict with guidance if dead."""
         target = self._targets.get(name)
         if target is None:
-            return {"exit_code": -1, "output": "", "stderr": "unknown machine", "error_kind": "ssh_disconnected",
-                    "hint": "Use connect(name) to reconnect."}
+            return {
+                "exit_code": -1,
+                "output": "",
+                "stderr": "unknown machine",
+                "error_kind": "ssh_disconnected",
+                "hint": "Use connect(name) to reconnect.",
+            }
         socket = self._socket_path(name)
         user = target.get("user", "")
         host = target.get("host", "")
         try:
             check = subprocess.run(
                 [self._ssh, "-S", socket, "-O", "check", f"{user}@{host}"],
-                capture_output=True, timeout=10,
+                capture_output=True,
+                timeout=10,
             )
             if check.returncode == 0:
                 return None
         except Exception:
             pass
-        return {"exit_code": -1, "output": "", "stderr": "SSH connection lost",
-                "error_kind": "ssh_disconnected",
-                "hint": "Connection dropped. Run connect(name) to reconnect, "
-                        "then shell_remove to clean up stale shells."}
+        return {
+            "exit_code": -1,
+            "output": "",
+            "stderr": "SSH connection lost",
+            "error_kind": "ssh_disconnected",
+            "hint": "Connection dropped. Run connect(name) to reconnect, "
+            "then shell_remove to clean up stale shells.",
+        }
 
     def exec_oneoff(self, name, command, timeout=30):
         self._ensure_alive(name)
         dead = self._check_alive(name)
         if dead:
             return dead
+        target = self._targets.get(name, {})
         provider = self._provider.get(name, ShellProviderFactory.create("linux"))
+        output_encoding = target.get("output_encoding") or provider.output_encoding
         try:
-            result = subprocess.run(
-                [*self._ssh_base_args(name), *provider.default_shell_args, provider.exec_flag, command],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            stdout = _decode_powershell_output(result.stdout or "")
-            stderr = _decode_powershell_output(result.stderr or "")
+            if provider.default_shell == "powershell.exe":
+                import base64
+
+                encoded = base64.b64encode(command.encode("utf-16-le")).decode()
+                args = [
+                    *self._ssh_base_args(name),
+                    *provider.default_shell_args,
+                    "-EncodedCommand",
+                    encoded,
+                ]
+            else:
+                args = [
+                    *self._ssh_base_args(name),
+                    *provider.default_shell_args,
+                    provider.exec_flag,
+                    command,
+                ]
+            result = subprocess.run(args, capture_output=True, text=False, timeout=timeout)
+            stdout_bytes = result.stdout or b""
+            stderr_bytes = result.stderr or b""
             return {
                 "exit_code": result.returncode,
-                "output": stdout,
-                "stderr": stderr,
+                "output": _decode_bytes(stdout_bytes, output_encoding),
+                "stderr": _decode_bytes(stderr_bytes, output_encoding),
             }
         except subprocess.TimeoutExpired:
             return {"exit_code": None, "output": "", "stderr": "timeout"}
@@ -352,6 +467,12 @@ class SSHBackend(Backend):
         ``cat > tmp; mv -f tmp path`` script, bypassing the command-line
         ARG_MAX limit entirely. The remote ``set -e`` ensures the script
         aborts on any error.
+
+        ``content`` is forwarded as-is — the caller's bytes must match
+        the remote console's InputEncoding (GBK on Chinese Windows,
+        UTF-8 on Linux/macOS).  Sandbox-mcp does NOT re-encode here,
+        because re-encoding a string assumed by the caller would lose
+        information on code pages not supported by Python's codecs.
         """
         import os as _os
 
@@ -374,18 +495,37 @@ class SSHBackend(Backend):
 
         script = provider.atomic_write_script(path)
         try:
+            if provider.default_shell == "powershell.exe":
+                import base64
+
+                encoded = base64.b64encode(script.encode("utf-16-le")).decode()
+                args = [
+                    *self._ssh_base_args(name),
+                    *provider.default_shell_args,
+                    "-EncodedCommand",
+                    encoded,
+                ]
+            else:
+                args = [
+                    *self._ssh_base_args(name),
+                    *provider.default_shell_args,
+                    provider.exec_flag,
+                    script,
+                ]
             result = subprocess.run(
-                [*self._ssh_base_args(name), *provider.default_shell_args, provider.exec_flag, script],
-                input=content,
-                capture_output=True,
-                timeout=60,
+                args, input=content, capture_output=True, text=False, timeout=60
             )
         except subprocess.TimeoutExpired:
             return {"status": "error", "stage": "write", "error": "timeout"}
         if result.returncode != 0:
+            err_msg = result.stderr or result.stdout or b"atomic write failed"
+            try:
+                err_msg = err_msg.decode(provider.output_encoding, errors="replace")
+            except Exception:
+                err_msg = repr(err_msg)
             return {
                 "status": "error",
                 "stage": "write",
-                "error": (result.stderr or result.stdout or "atomic write failed"),
+                "error": err_msg,
             }
         return {"status": "ok", "path": path, "bytes_written": len(content)}

@@ -543,6 +543,7 @@ def test_docker_build_missing_context(docker_backend, tmp_path, monkeypatch):
 def test_docker_open_shell(docker_backend, mock_client):
     """open_shell creates a ShellSession backed by DockerExecProcess."""
     container = mock_client.containers.get.return_value
+    container.client = mock_client
     container.id = "c123"
     api = mock_client.api
     api.exec_create.return_value = {"Id": "e789"}
@@ -564,6 +565,7 @@ def test_docker_open_shell(docker_backend, mock_client):
     api.exec_start.return_value = socket_mock
 
     shell = docker_backend.open_shell("dev")
+    assert api.exec_create.call_args.kwargs["tty"] is True
     assert shell._external is True
     assert shell._process is not None
     assert hasattr(shell._process, "stdin")

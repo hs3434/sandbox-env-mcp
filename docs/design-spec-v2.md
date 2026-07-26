@@ -1,564 +1,243 @@
-# Sandbox MCP v2 Design Spec
+# Sandbox MCP Design Spec (current)
 
-> Current design as of the 2026-07-10 design review.
+> **Scope**: describes what sandbox-mcp is *now*, not the historical
+> v1 → v2 evolution.  The implementation plan / test plan lives in
+> [`implementation-plan.md`](implementation-plan.md); the operator-facing
+> workflow lives in [`README.md`](../README.md).
 
-## Problem (unchanged)
+## 1. Problem
 
-Hermes Agent's built-in terminal tool creates ephemeral containers that reset on
-recreation. The agent cannot define persistent environments, deploy long-running
-services, or manage processes reliably. The built-in file/terminal/code-execution
-tools also consume context window space.
+Hermes Agent's built-in terminal/file/code_execution tools create
+ephemeral containers that reset on recreation. The agent cannot define
+persistent environments, deploy long-running services, or reliably
+manage process state — and every tool call burns context window space
+on tool schemas.
 
-## What Changed from v1
+`Sandbox MCP` exposes a small set of persistent tools (Docker
+containers + SSH remote machines) that the agent can drive across many
+turns without losing state, while keeping `tools/list` small.
 
-| Aspect | v1 (19 tools) | v2 (7 tools) |
-|--------|---------------|--------------|
-| tools/list count | 19 | 7 (6 core + 1 sandbox_env) |
-| Context per API call | ~2850 tokens | ~875 tokens |
-| Management ops | All exposed directly | Progressive discovery via sandbox_env |
-| Shell exec + write | Separate tools (exec + shell_write) | Merged into sandbox_shell_exec (wait param) |
-| Shell creation/cleanup | Exposed tools | Discovered via sandbox_env(action="help") |
-| Lifecycle ops | Generic stop/start/remove | Backend-specialized after docker_help/ssh_help |
-| Shell I/O confirmation | Single marker (end only) | Dual marker (start + end) |
-| Output buffer | Unbounded pipe reads | Drain thread, head 5K + tail ring buffer |
-| Shell cleanup | Automatic | Manual via shell_remove |
+## 2. Backends
 
-## Architecture
+Two backends, both supported in production:
+
+| Backend | Auth | Shell transport | Used for |
+|---|---|---|---|
+| **Docker** | docker daemon socket / TCP / SSH transport (config) | `docker exec` with `tty=True` via the Python SDK | Linux + Windows containers, locally or remote daemons |
+| **SSH**    | SSH key (`key = "..."` per target) | `ssh -tt <user>@<host> powershell.exe` / `bash` | Linux or Windows (PowerShell) over SSH; OpenSSH Server must be running on the Windows host |
+
+There is **no WinRM backend** in the project; Windows remote access is
+SSH-only. The previous WinRM implementation was removed entirely; git
+history retains the commits if needed for archaeology.
+
+All shell sessions run under a **real PTY**.  This is what makes
+`pager less`, `vim`, password prompts, and PowerShell's interactive
+prompt work normally — the agent sees a transparent byte stream and the
+drain thread reads the same stream.
+
+## 3. MCP surface
+
+`tools/list` advertises 12 tools (13 when audit log is file-backed):
+
+| Tool | Purpose |
+|---|---|
+| `sandbox_shell_exec` | Send a command to a shell. `wait=true` blocks (default 10 s), `wait=false` returns immediately. |
+| `sandbox_shell_read` | Read buffered output from a shell (non-blocking). |
+| `sandbox_shell_new` | Open an extra shell on a machine (the default shell is auto-created on first `shell_exec` if missing). |
+| `sandbox_shell_remove` | Terminate and remove a shell (any state). |
+| `sandbox_shell_list` | List all shells with state, machine, is_default, last_command. |
+| `sandbox_machine_list` | List all machines with backend, status, shell count, uptime. |
+| `sandbox_default_set` | Set default machine *or* default shell (exactly one of `machine` / `shell_id`). |
+| `sandbox_file_read` | Read a text file with line numbers and pagination. |
+| `sandbox_file_write` | Write a file (atomic, in-process lint for known extensions). |
+| `sandbox_file_patch` | Targeted find-and-replace (replace mode) or unified-diff (patch mode), fuzzy-matched. |
+| `sandbox_file_search` | ripgrep content search + glob file search. |
+| `sandbox_env` | Progressive discovery: `help`, `status`, `list_targets`, `machine_list`, `default_set`, `shell_*`, `docker_*`, `connect`, `close`. |
+| `sandbox_audit_query` | Read the audit log (filtered, paginated). Only present when `[audit] log_path` is set. |
+
+`tools/list` always advertises the 6 core tools (`shell_*`, `file_*`)
+plus `env` so the agent can discover management actions on demand;
+the agent opts in to backend-specific actions via `action=help` /
+`action=list_targets`.
+
+### `tools/list` size budget
+
+The 12-tool schema is the production contract.  Adding a new tool
+requires deleting or demoting one.  Backend-specific discovery is
+deliberately *not* in `tools/list` — `sandbox_env` is the single
+meta-tool whose description stays short.
+
+## 4. Shell protocol — one-shot random Prompt
+
+Each shell installs a single random prompt token **at startup**; we no
+longer wrap every command in start/end markers.
+
+* **Bash** — `unset PROMPT_COMMAND; export PS1='<token>:$?>'`.  Setting
+  `PROMPT_COMMAND` empty stops bash from re-emitting its own prompt
+  prefix; PS1 is the only prompt line.
+* **PowerShell** — `prompt` function that prints
+  `'<token>:' + $LASTEXITCODE + '>'`.  Also runs `setup_command`
+  once (UTF-8 console encoding, `chcp 65001`, `PYTHONUTF8=1`,
+  disables PSReadLine's continuation prompt).
+* **The drain thread** scans for `<token>:N>` and uses the leading
+  digits as the captured exit code.  When the agent writes
+  `command + '\n'`, the next prompt line is the gate from
+  `waiting` → `ready`.
+
+We deliberately do **not** detect PS2 (the secondary /
+continuation prompt).  Reasons:
+
+* Shell configuration varies wildly across distros / Windows versions,
+  and any regex risks false matches inside command output.
+* The drain thread's only required signal is the primary prompt after
+  each command; PS2 only matters for incomplete input, which the agent
+  never sends (every command is one full line followed by `\n`).
+* Real interactive programs emit PS2 freely; we want it preserved in
+  the output stream as-is.
+
+This keeps the protocol robust against agents whose commands include
+unusual quoting, embedded newlines in quoted strings, or paginated
+output.  Anything that prints to stdout after the prompt is captured
+as part of the *next* command's output — same as a human's terminal.
+
+## 5. Shell state machine
+
+Three states.  The per-shell lock is held internally for the duration
+of a single `send(wait=True)` call, but that is never exposed to the
+agent — the only `state` values the agent ever sees are these three:
 
 ```
-Hermes Gateway (host process)
-  └── MCP Client (JSON-RPC over stdio)
-        └── Sandbox MCP Server (host process)
-              ├── tools/list (7 tools, ~875 tokens/turn)
-              │     ├── Core: sandbox_shell_exec, sandbox_shell_read
-              │     ├── Core: sandbox_file_read/write/patch/search
-              │     └── Entry: sandbox_env
-              │           └── Default description only advertises help/status
-              │
-              └── sandbox_env progressive discovery
-                    ├── action=help
-                    │     ├── default_set
-                    │     ├── shell_new / shell_list / shell_remove
-                    │     └── docker_help / ssh_help
-                    ├── action=docker_help
-                    │     └── docker_run / docker_build / docker_commit
-                    │         docker_stop / docker_start / docker_remove
-                    │         docker_ps / docker_images
-                    └── action=ssh_help
-                          └── ssh_connect / ssh_close
+                   +-------+
+                   | ready |  <-- drain thread saw prompt line
+                   +-------+
+                      |
+        agent.send() |  (lock acquired)
+                      v
+                   +---------+
+                   | waiting |  <-- command bytes written, prompt not yet seen
+                   +---------+
+                      |
+            drain sees| prompt token,
+            _prompt_  | captures exit code
+            event.set  v
+                   +-------+  (back to ready, exit code returned)
+
+  (any state) --> +-----------+
+                  |terminated |  <-- shell process exited / broken pipe
+                  +-----------+
+                  state kept; last output preserved;
+                  agent must shell_remove + shell_new.
 ```
 
-## Three-Layer Tool Exposure
+| State | `send(wait=True)` returns | `send(wait=False)` returns | `read()` returns | `remove()` |
+|-------|---------------------------|----------------------------|------------------|-----------|
+| `ready`      | prompt is set; `output` + `exit_code` + `status="ready"` | prompt not seen yet → `status="waiting"`. Caller follows up with `shell_read`. | last buffered output, `status="ready"` if prompt has been seen since last `send` | kills shell, removes registry entry |
+| `waiting`    | `error` with guidance (`"waiting for previous command"`) | same error | buffered output, `status="waiting"` | kills shell, removes registry entry |
+| `terminated` | `error` with guidance (`"use shell_remove then shell_new"`) | same error | buffered output + `status="terminated"` | removes registry entry (no-op on already-dead shell) |
 
-### Layer 1: tools/list (always exposed, ~875 tokens)
+### `wait=True` timeout semantics
 
-7 tools with simple, well-defined schemas:
+`send(wait=True, timeout=10)` blocks until the prompt is seen.  When
+the timeout elapses the response is:
 
-| Tool | Purpose | Frequency |
-|------|---------|-----------|
-| `sandbox_shell_exec` | Execute a shell command (wait or non-blocking) | High |
-| `sandbox_shell_read` | Non-blocking read of shell output | High |
-| `sandbox_file_read` | Read file with line numbers + pagination | High |
-| `sandbox_file_write` | Write file (full content) | High |
-| `sandbox_file_patch` | Targeted find-and-replace (fuzzy match) | High |
-| `sandbox_file_search` | Ripgrep content search + glob file search | High |
-| `sandbox_env` | Environment management discovery and dispatch | Low |
-
-machine-aware core tools accept an optional `machine` parameter (default: default
-machine set via `sandbox_env(action="default_set")`). `sandbox_shell_read` uses
-`shell_id` and does not need a machine.
-
-### Layer 2: sandbox_env help (on-demand, ~200 tokens)
-
-The `sandbox_env` schema intentionally keeps the default `tools/list` entry
-small. Its description only advertises two actions:
-
-- `help`: discover common management operations
-- `status`: inspect default machine, machines, and shells
-
-`action` remains a free string, not an enum, so discovered operations can be
-called through the same tool.
-
-`sandbox_env(action="help")` returns:
-- `default_set`: set default machine or default shell
-- `shell_new`: create an additional shell session
-- `shell_list`: list shell sessions
-- `shell_remove`: terminate/remove a shell session
-- Pointers to `docker_help` and `ssh_help`
-
-### Layer 3: backend-specific help (on-demand, ~400 tokens each)
-
-- `sandbox_env(action="docker_help")`: docker_run, docker_build, docker_commit,
-  docker_stop, docker_start, docker_remove
-- `sandbox_env(action="ssh_help")`: ssh_connect, ssh_close
-
-Agent only loads the backend help it needs. A Docker-only agent never loads
-SSH docs.
-
-### sandbox_env inputSchema (~100 tokens in tools/list)
-
-```json
+```python
 {
-  "name": "sandbox_env",
-  "description": "Environment management. Call action=help to discover management operations or action=status to inspect current state. Other actions are discovered on demand.",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "action": {"type": "string", "description": "Operation name. Start with help or status."},
-      "params": {"type": "object", "description": "Operation parameters, documented by help actions."}
-    },
-    "required": ["action"]
-  }
+    "output": "...everything seen so far...",
+    "exit_code": None,
+    "status": "waiting",
+    "hint": "Command is still running. For long tasks use wait=false and shell_read.",
 }
 ```
 
-### Context cost comparison
+The shell stays in `waiting`; the agent's command is still running on
+the target.  The recommended workflow is:
+
+1. First attempt: `shell_exec(wait=True, timeout=10)`.
+2. On `status="waiting"`, call `shell_read` to pull incremental output.
+3. If still waiting after another interval, retry
+   `shell_exec(wait=True, timeout=N)` against the same `shell_id` —
+   this is a *new* command; it cannot be used to read the prior one's
+   output.  To read without sending, use `shell_read`.
+4. Or, more efficient for known long tasks: `shell_exec(wait=False, ...)`
+   to fire the command and immediately return, then poll `shell_read`.
+
+### `terminated` shells are never auto-replaced
+
+When the default shell's process exits (clean `exit`, signal, broken
+pipe), the registry keeps the shell entry.  `get_or_create_default`
+returns the same `shell_id`; subsequent `shell_exec` calls fail with
+the `shell_remove`/`shell_new` guidance.  The agent must explicitly:
+
+* `shell_remove(shell_id=...)` — drops the registry entry.
+* `shell_new(machine=...)` — opens a fresh shell.
+
+Auto-replacement was removed because it silently hid shell crashes
+and made it impossible to inspect the post-mortem output.
+
+## 6. Persistent backend state
+
+* **Docker containers** survive an MCP server restart.  Server boot
+  calls `docker_ps` (filtered by the `sandbox-mcp.managed=true` label)
+  to re-adopt every surviving container into the in-process
+  `MachineRegistry`.  This is the single source of truth — labels are
+  authoritative; name prefix is not consulted (an attacker can't trick
+  the server into managing an arbitrary container by naming it
+  `sandbox-foo`).
+* **SSH machines** do *not* survive restart.  The process registry is
+  in-memory; on restart the agent must `connect(name=...)` to reopen
+  the ControlMaster.  (The SSH socket itself survives until the OS
+  cleans `/tmp`, but the sandbox-mcp side has no record of it.)
+* **Shell sessions** never survive restart.  Re-create with
+  `shell_new`.
+
+## 7. Default machine / default shell
+
+The registry tracks two levels of "default":
+
+* **Default machine** — the machine that receives file_* / shell_exec
+  calls when `[machine]` is omitted.  Set with
+  `default_set(machine=...)` or auto-provisioned via
+  `[default_machine] enabled = true` in config.
+* **Default shell per machine** — the shell that receives commands
+  when `[shell_id]` is omitted.  Lazy-created on first `shell_exec`
+  against a given machine.
+
+Both targets are *not* auto-replaced when their underlying object dies.
+If the default machine exits, `machine_list` still shows it; the agent
+must `docker_remove` + `docker_run` (or `close` + `connect` for SSH)
+to get a working default.
+
+## 8. sandbox_env actions (current)
 
 ```
-v1: 19 tools × ~150 tokens = ~2850 tokens/turn (every API call)
-v2: 7 tools × ~125 tokens = ~875 tokens/turn (every API call)
-    + help (200 tokens, once) + docker_help (400 tokens, once) = ~1475 total
-
-Savings: ~50% on every API call, more for agents that don't need all backends.
-```
-
-## Shell Design
-
-### sandbox_shell_exec
-
-Replaces v1's `sandbox_exec` + `shell_write` with a single command execution
-tool.
-
-```
-sandbox_shell_exec(command, shell_id?, machine?, wait=true, timeout=30, max_output=50000)
-```
-
-**Dual marker mechanism:**
-
-```
-Sent to shell stdin:
-echo __START_<uuid>__
-{command}
-echo __END_<uuid>__:$?
-
-stdout output stream:
-__START_<uuid>__          ← confirms command started executing
-...command output...       ← actual command output
-__END_<uuid>__:0           ← confirms command finished, exit code = 0
-```
-
-**wait=true (blocking):**
-1. Send command + dual markers
-2. Wait for drain thread to signal __END_ found (or timeout)
-3. Return immediately on __END_ (does NOT wait for full timeout)
-4. On timeout: return partial output, status="running"
-
-**wait=false (non-blocking):**
-1. Send command + dual markers
-2. Wait briefly for __START_ (~2s timeout)
-3. Return with confirmed=true (command executing)
-4. Agent uses shell_read() later for output
-
-**Return values:**
-
-```python
-# wait=true
-{"output": "...", "exit_code": 0, "status": "completed"}            # normal
-{"output": "partial...", "exit_code": null, "status": "running"}     # timeout
-{"output": "partial...", "exit_code": null, "status": "terminated"}  # bash died
-
-# wait=false
-{"status": "running", "confirmed": true}                             # started OK
-{"status": "terminated", "confirmed": false}                         # bash died
-```
-
-**Why dual markers vs single marker:**
-
-| | Single marker (v1) | Dual marker (v2) |
-|---|---|---|
-| Confirm execution started | No (guess from output) | Yes (__START_) |
-| Return immediately on completion | Yes | Yes |
-| wait=false confirmation | Impossible | __START_ brief wait |
-| Timeout return includes confirmation | No | `confirmed: true/false` |
-| Overhead | 1 echo | 2 echo (negligible) |
-
-Critical for silent commands (sleep, pip install): single marker gives no feedback
-until completion or timeout; dual marker's __START_ immediately confirms execution.
-
-### Shell State Machine
-
-```
-States: idle | busy | running | terminated
-
-sandbox_env(action="shell_new") -> idle
-
-shell_exec(wait=true):
-  idle -> busy (acquire lock, send command, wait for __END_)
-  busy -> idle (__END_ found)
-  busy -> running (timeout, lock released, command still running)
-
-shell_exec(wait=false):
-  idle -> running (send command, wait for __START_, release)
-
-shell_read():
-  running -> running (no __END_ yet)
-  running -> idle (__END_ found by drain thread)
-  idle -> idle (no output)
-  any -> terminated (EOF detected by drain thread)
-
-shell_remove():
-  any -> removed from registry (no state, shell gone)
-
-bash process exits/dies:
-  any -> terminated (passive close, shell stays in registry)
-```
-
-**Concurrency rules:**
-
-| Shell state | shell_exec | shell_read | shell_remove |
-|-------------|-----------|------------|-------------|
-| idle | Allowed | Returns empty | Allowed |
-| busy | Rejected ("Shell is busy") | Rejected | Allowed (interrupts) |
-| running | Rejected ("Shell is busy") | Allowed | Allowed |
-| terminated | Rejected ("Shell terminated") | Returns remaining + terminated | Allowed (cleanup) |
-
-Per-shell lock ensures atomic state transitions. shell_exec(wait=true) holds the
-lock during blocking read; other operations on the same shell are rejected.
-
-### Background Drain Thread
-
-Each shell has a daemon drain thread that continuously reads from the bash
-process's stdout pipe.
-
-**Why needed:** Linux pipe buffer is 64KB. Without continuous draining, a
-command producing >64KB output with no shell_read calls would block on write(),
-causing deadlock.
-
-**Buffer strategy: head 5KB + tail ring buffer (in-memory) + tail-only output on read**
-
-```
-drain thread ring buffer (in-memory, never read by shell_read):
-├── head: first 5KB (fixed)
-├── tail: last ~45KB ring buffer (old data discarded as new arrives)
-└── total memory per shell: ~50KB
-```
-
-When `shell_read` returns output larger than `max_output` (default 50KB),
-the implementation returns the **tail** (last `max_output` bytes) with a
-truncation notice, not head+notice+tail. This is because command output
-endings (errors, final results) are usually more useful than the opening.
-The head buffer is kept in memory in case future revisions want to switch
-to a head+tail scheme.
-
-**Marker detection:** drain thread scans for __START_ and __END_ markers:
-- __START_ found: signal shell_exec(wait=false) to return confirmed=true
-- __END_ found: extract exit_code, set state idle (if running), signal
-  shell_exec(wait=true) to return
-- EOF (pipe closed): set state terminated, no exit_code available
-
-**shell_read reads from the in-memory buffer**, never from the pipe directly.
-
-### I/O Stream Handling
-
-**Merged stdout+stderr** (`stderr=subprocess.STDOUT`), same as Hermes terminal tool.
-
-Rationale:
-- Matches real terminal behavior (stdout/stderr interleaved on screen)
-- Preserves temporal ordering (important for understanding command behavior)
-- Marker mechanism works cleanly with single stream
-- shell_read is simpler (one stream)
-- Agent can redirect if needed: `command 2>&1`, `command 2>/dev/null`
-
-Hermes' `code_execution` tool separates streams (stdout=result, stderr=error)
-because Python scripts have clear result/diagnostics separation. Shell commands
-don't have this distinction.
-
-### Output Truncation
-
-```python
-shell_exec(command, ..., max_output=50000)  # default 50KB
-```
-
-- Output <= max_output: return as-is
-- Output > max_output: return tail (last max_output bytes) + truncation notice
-  `[Output truncated: showing last 50KB of 500KB total]`
-- Tail strategy (not head+tail) because command output endings are most
-  important (errors, final results, summaries)
-
-### shell_read Return Values
-
-```python
-{"output": "new data...", "status": "running"}                      # command still running
-{"output": "final output...", "status": "completed", "exit_code": 0} # just completed
-{"output": "", "status": "idle"}                                     # no command running
-{"output": "remaining...", "status": "terminated"}                   # bash process died
-```
-
-shell_read detects command completion via drain thread's __END_ marker parsing.
-Agent does not need to parse markers itself.
-
-### Shell Cleanup
-
-**No auto-cleanup.** Terminated shells stay in the registry until the agent
-explicitly calls `shell_remove`. This prevents losing diagnostic information.
-
-`shell_list` includes hints for terminated shells:
-
-```json
-[
-  {"shell_id": "sh_abc", "machine": "dev", "status": "idle", "is_default": true, "uptime": "5m"},
-  {"shell_id": "sh_def", "machine": "dev", "status": "terminated", "is_default": false,
-   "hint": "Process exited. Call shell_remove to clean up."}
-]
-```
-
-### write vs patch (kept separate)
-
-Both are in core tools. Not merged because of token efficiency:
-
-| | write | patch |
-|---|---|---|
-| Use case | Create/overwrite file | Targeted edit |
-| Data sent | Full file content | old_string + new_string only |
-| 500-line file, 1-line change | ~3000 tokens | ~30 tokens |
-| Fuzzy matching | No | Yes (9 strategies) |
-| Returns diff | No | Yes (unified diff) |
-
-Hermes also keeps these as separate tools (`write_file` + `patch`).
-
-## sandbox_env Progressive Discovery
-
-`sandbox_env` is the only management tool exposed through MCP. It uses a
-progressive discovery model to keep the default tool schema small:
-
-1. `tools/list` only describes `action="help"` and `action="status"`.
-2. `sandbox_env(action="help")` returns common management actions and pointers
-   to backend-specific help.
-3. `sandbox_env(action="docker_help")` or `sandbox_env(action="ssh_help")`
-   returns backend-specific lifecycle actions.
-4. Discovered actions are called through the same `sandbox_env(action, params)`
-   interface.
-
-### action="help" (static, ~200 tokens)
-
-```json
-{
-  "default_actions": [
-    {
-      "action": "help",
-      "description": "Discover common management actions and backend help entries"
-    },
-    {
-      "action": "status",
-      "description": "Inspect default machine, machines, and shell sessions"
-    }
-  ],
-  "operations": [
-    {
-      "action": "default_set",
-      "description": "Set default machine or default shell. Pass machine to set the default machine. Pass shell_id to set that shell as its machine's default shell.",
-      "optional": {"machine": "string", "shell_id": "string"},
-      "requires": "Exactly one of machine or shell_id",
-      "example": {"machine": "dev", "shell_id": "sh_abc"}
-    },
-    {
-      "action": "shell_new",
-      "description": "Create an additional shell session on a machine.",
-      "optional": {"machine": "string", "purpose": "string"}
-    },
-    {
-      "action": "shell_list",
-      "description": "List shell sessions, optionally filtered by machine.",
-      "optional": {"machine": "string"}
-    },
-    {
-      "action": "shell_remove",
-      "description": "Terminate a live shell process and remove it from the registry. If already terminated, only remove the registry entry.",
-      "required": {"shell_id": "string"}
-    }
-  ],
-  "more_help": {
-    "docker_help": "Discover Docker machine actions: run/build/commit/stop/start/remove",
-    "ssh_help": "Discover SSH machine actions: connect/disconnect/reconnect/remove"
-  },
-  "note": "Core tools are directly exposed as sandbox_shell_exec, sandbox_shell_read, and sandbox_file_read/write/patch/search. machine-aware tools support optional machine."
-}
-```
-
-### action="status" (dynamic)
-
-```json
-{
-  "default_machine": "dev",
-  "machines": [
-    {"name": "dev", "backend": "docker", "status": "running",
-     "purpose": "Python dev", "shells": 2, "uptime": "2h15m"}
-  ],
-  "shells": [
-    {"shell_id": "sh_abc", "machine": "dev", "status": "idle", "purpose": "default", "is_default": true, "uptime": "5m"},
-    {"shell_id": "sh_def", "machine": "dev", "status": "terminated", "is_default": false,
-     "hint": "Process exited. Call shell_remove to clean up."}
-  ]
-}
-```
-
-### action="docker_help" (static, ~400 tokens)
-
-Returns Docker operations with required/optional params, returns, and examples:
-
-```
-docker_run / docker_build / docker_commit
-docker_stop / docker_start / docker_remove / docker_ps / docker_images
-```
-
-### action="ssh_help" (static, ~200 tokens)
-
-Returns SSH operations with required/optional params, returns, and examples:
-
-```
-ssh_connect / ssh_close
-```
-
-### Backend-specialized lifecycle operations
-
-v1 had generic `stop`/`start`/`remove` that dispatched by backend. v2
-specializes them:
-
-| v1 (generic) | v2 Docker | v2 SSH | Semantic difference |
-|---|---|---|---|---|
-| stop | docker_stop | — | Container stops; SSH has no "stopped" state |
-| start | docker_start | — | Container restarts; SSH auto-reconnects on demand |
-| remove | docker_remove | ssh_close | Container destroyed vs connection closed + unregistered |
-
-Action name itself indicates the backend and behavior. No dispatch ambiguity.
-Error messages can be specific: "docker_stop only works on Docker machines".
-
-### Agent discovery flow
-
-```
-1. sandbox_env(action="help")            → default_set + shell actions + docker_help/ssh_help pointers
-2. sandbox_env(action="status")          → current machines and shells
-3. sandbox_env(action="docker_help")     → only if Docker needed (~400 tokens)
-4. sandbox_env(action="docker_run", ...)  → create container
-5. sandbox_env(action="default_set", ...) → set default machine
-6. sandbox_shell_exec(command="...")      → work with core tools
-   ...
-7. sandbox_env(action="docker_stop", ...) → stop when done
-```
-
-## Complete sandbox_env Action List
-
-```
-Default discovery:  help / status
-Common:             default_set
+Default discovery:  help / status / list_targets
+Common:             default_set / machine_list
 Shell:              shell_new / shell_list / shell_remove
-Backend help:       docker_help / ssh_help
 Docker:             docker_run / docker_build / docker_commit
                     docker_stop / docker_start / docker_remove
-                    docker_ps / docker_images
-SSH:                ssh_connect / ssh_close
+                    docker_restart / docker_ps / docker_images
+                    docker_image_history / docker_inspect
+                    docker_logs / docker_diff / docker_stats
+SSH:                connect / close
 ```
 
-18 actions, 1 management tool in tools/list. Agent loads docs on demand.
+`connect(name)` and `close(name)` are the only SSH-touching actions.
+`connect` reads its connection params from the `[ssh.targets.{name}]`
+table in `config.toml`; the agent cannot supply `host` / `user` /
+`key` directly — that's a deliberate boundary.
 
-## Backend Implementation
+## 9. Out of scope
 
-### Docker Backend
+The following are *not* in scope for the current design:
 
-- Container naming: bare machine name, namespace enforced via the
-  `sandbox-mcp.managed=true` label (deterministic, allows reconnection)
-- Shell process: `docker exec -i <container> bash`
-- Container lifecycle: `docker run -d --name <name> --init --restart
-  on-failure:3 <image>` (image's own CMD/ENTRYPOINT runs as designed;
-  exec-only behaviour is the image author's responsibility)
-- docker_stop: `docker stop <name>`
-- docker_start: `docker start <name>`
-- docker_remove: `docker rm -f <name>`
-- docker_commit: `docker commit <name> <image_tag>`
-- docker_build: `docker build -t <image_tag> -f <dockerfile> <context_dir>`
-
-### SSH Backend
-
-- Connection sharing: SSH ControlMaster multiplexing
-- Master socket: `/tmp/sandbox-mcp-ssh-<name>`
-- Shell process: `ssh -o ControlPath=<socket> <user>@<host> bash`
-- ssh_connect: establish ControlMaster connection (key auth only)
-- ssh_connect: establish ControlMaster connection (key auth only)
-- ssh_close: disconnect + unregister from registry; auto-reconnects on next use
-- No commit/build support (SSH backend only)
-- No password authentication in v1 (key-based auth via `key` parameter)
-
-## Default Machine Model
-
-- `sandbox_env(action="default_set", params={machine:"dev"})` sets default machine
-- `sandbox_env(action="default_set", params={shell_id:"sh_abc"})` sets that shell as the default shell for its machine
-- machine-aware core tools (`sandbox_shell_exec`, `sandbox_file_*`) accept optional `machine` parameter
-- If no machine specified: use default machine
-- If explicit machine specified: use that machine, don't change default machine
-- If no machine and no default machine: error
-- `sandbox_shell_exec` without `shell_id` uses the machine's default shell, lazily creating one if needed
-
-## Project Structure (updated)
-
-```
-sandbox-mcp/
-├── server.py              # MCP server entry + tool dispatch
-├── machine_registry.py     # machine management (name -> backend)
-├── shell_registry.py      # Shell session management (shell_id -> ShellSession)
-├── shell_session.py       # ShellSession: drain thread, dual markers, state machine
-├── sandbox_env.py         # sandbox_env action dispatch + help generation
-├── file_operations.py     # File ops: read/write/patch/search via shell
-├── backends/
-│   ├── __init__.py
-│   ├── base.py            # Abstract Backend interface
-│   ├── docker_backend.py  # Docker implementation
-│   └── ssh_backend.py     # SSH implementation
-├── pyproject.toml
-├── README.md
-├── docs/
-│   ├── design-spec-v2.md      # this file
-│   └── implementation-plan.md # implementation plan
-└── tests/
-```
-
-## Initial Scope
-
-### Included
-- Docker backend: run, stop, start, remove, commit, build
-- SSH backend: connect, disconnect, reconnect, remove
-- Shell management: shell_exec (wait/no-wait), shell_read, shell_new, shell_remove, shell_list
-- Dual marker execution confirmation
-- Background drain thread with head+tail buffer
-- File operations: read, write, patch, search
-- sandbox_env progressive discovery (tools/list -> help/status -> docker_help/ssh_help)
-- Default targeting model with default machine/default shell
-- Output truncation (tail, configurable max_output)
-- Manual shell cleanup with shell_list hints
-
-### Not Included (future versions)
-- PTY mode for interactive CLI tools
-- Docker image listing
-- machine/shell recovery after MCP server restart
-- Docker network management
-- Docker Compose support
-- Resource limits (CPU/memory) per machine
-- Security: dangerous command detection, sudo blocking (see Security section below)
-- Access control / sandboxing of dangerous commands
-
-## Security (deferred)
-
-Hermes has extensive security guards (dangerous command detection, sudo blocking,
-sensitive path protection, approval system). sandbox-mcp v2 does NOT replicate
-these in V1 because:
-
-- Sandbox environments are isolated (Docker containers / SSH to dedicated machines)
-- The agent is the trusted operator inside the sandbox
-- Adding guards adds complexity without clear value in isolated environments
-
-Future versions may add optional guards if sandbox-mcp is used in less trusted
-contexts.
-
-## Implementation Language
-
-Python 3.12+. Uses the `mcp` Python SDK, `docker` CLI via subprocess, system
-`ssh` with ControlMaster, pytest.
+* WinRM backend (removed; SSH is the only Windows transport).
+* Local pseudo-backend (no in-process target that is not backed by a
+  real container or SSH session — the "local PTY" code path is shared
+  with the SSH backend and exercised by tests).
+* Per-command marker protocol (replaced by the one-shot random Prompt).
+* PS2 / continuation-prompt detection (see § 4).
+* In-place migration of `admin` containers between peer and god-mode
+  layouts (explicit `docker_remove` + recreate is required).
+* Resource limits (CPU / memory) per machine.
+* Built-in session isolation between agents (matches Hermes MCP
+  semantics — agents share the in-process registry).

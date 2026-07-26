@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import ClassVar
 
 
 class ShellProvider(ABC):
@@ -37,9 +38,18 @@ class ShellProvider(ABC):
 
     @property
     def input_encoding(self) -> str:
-        """Encoding used when writing commands to this shell's stdin.
-        Bash reads UTF-8; Windows PowerShell reads the system's active
-        code page (GBK on Chinese Windows, etc.).
+        """Codec used to encode bytes written to this shell's stdin
+        (PowerShell ``-Command`` argv or PTY stdin).  For Bash this is
+        ``utf-8``; for Windows PowerShell it's the host's active code
+        page (e.g. ``gbk`` on Chinese Windows) as reported by a probe.
+        """
+        return "utf-8"
+
+    @property
+    def output_encoding(self) -> str:
+        """Codec used to decode bytes received from this shell's
+        stdout / PTY.  Defaults to ``utf-8``.  PowerShell on Chinese
+        Windows uses ``gbk``, on Japanese Windows ``cp932``, etc.
         """
         return "utf-8"
 
@@ -47,18 +57,24 @@ class ShellProvider(ABC):
     def setup_command(self) -> str:
         """Command to run once at shell startup before any user command.
 
-        Bash needs nothing; PowerShell 5.1 needs to set UTF-8 output
-        encoding to avoid UTF-16LE corruption over SSH.
+        The default is empty.  PowerShell's setup only installs the
+        prompt function — sandbox-mcp does NOT touch ``chcp`` or
+        ``[Console]::OutputEncoding`` because the host's native
+        encoding is what the shell actually uses (and overriding it
+        from inside the shell breaks script parsing).  The codec used
+        to read stdin / write stdout is decided up front by an
+        encoding probe, then threaded through the provider.
         """
         return ""
 
-
+    @property
+    def uses_prompt(self) -> bool:
+        return True
 
     # ---- File read ----
 
     @abstractmethod
-    def file_read_command(self, path: str, offset: int, limit: int,
-                          max_size: int) -> str:
+    def file_read_command(self, path: str, offset: int, limit: int, max_size: int) -> str:
         """Generate a one-shot file-read command.
 
         Must produce the 4-line structured output described in the class
@@ -116,21 +132,14 @@ class ShellProvider(ABC):
         """Glob-style file search via ripgrep's ``--files`` with mtime sort."""
 
     @abstractmethod
-    def search_content_command(self, pattern: str, path: str,
-                               file_glob: str, limit: int,
-                               output_mode: str,
-                               context: int) -> str:
+    def search_content_command(
+        self, pattern: str, path: str, file_glob: str, limit: int, output_mode: str, context: int
+    ) -> str:
         """ripgrep content search returning ``path:line:snippet`` output."""
 
-    # ---- Dual-marker protocol ----
-
     @abstractmethod
-    def marker_start_command(self, marker_id: str) -> str:
-        """Command that emits ``__START_{marker_id}__`` on its own line."""
-
-    @abstractmethod
-    def marker_end_command(self, marker_id: str) -> str:
-        """Command that emits ``__END_{marker_id}__:$?`` on its own line."""
+    def prompt_setup_command(self, token: str) -> str:
+        """Configure the persistent shell's primary prompt token."""
 
 
 class ShellProviderFactory:
@@ -142,7 +151,7 @@ class ShellProviderFactory:
         provider = ShellProviderFactory.create("windows")  # → PowerShellProvider
     """
 
-    _providers: dict[str, type[ShellProvider]] = {}
+    _providers: ClassVar[dict[str, type[ShellProvider]]] = {}
 
     @classmethod
     def register(cls, os_type: str, provider_cls: type[ShellProvider]) -> None:
@@ -159,8 +168,5 @@ class ShellProviderFactory:
 
         provider_cls = cls._providers.get(os_type)
         if provider_cls is None:
-            raise ValueError(
-                f"Unknown OS type: {os_type!r}. "
-                f"Available: {list(cls._providers)}"
-            )
+            raise ValueError(f"Unknown OS type: {os_type!r}. Available: {list(cls._providers)}")
         return provider_cls(**kwargs)

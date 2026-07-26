@@ -47,12 +47,12 @@ auto_generate_if_empty = true
 work_home = "/var/lib/sandbox-mcp"
 
 # Sub-directory under work_home used as the inter-container shared
-# workspace (see docs/sandbox-boundary.md).  Every docker_run auto-
-# mounts work_home/<share_subdir>/<machine>/ rw into the container at
-# /share/<machine>/, plus every peer subdirectory read-only,
-# so containers collaborate via the filesystem without any per-run
-# configuration.  Set to "" (empty string) to disable the share mount.
-# Overridable via $SANDBOX_MCP_STORAGE_SHARE_SUBDIR.
+# workspace (see the `docker_run sandbox boundary` section of README).
+# Every docker_run auto-mounts work_home/<share_subdir>/<machine>/ rw
+# into the container at /share/<machine>/, plus every peer subdirectory
+# read-only, so containers collaborate via the filesystem without any
+# per-run configuration.  Set to "" (empty string) to disable the share
+# mount.  Overridable via $SANDBOX_MCP_STORAGE_SHARE_SUBDIR.
 share_subdir = "_share"
 
 [audit]
@@ -66,6 +66,10 @@ share_subdir = "_share"
 log_path = "~/.sandbox-mcp/audit.db"
 
 [docker]
+# Default image used by `docker_run` when the agent doesn't pass an
+# explicit image.  Build a custom image with `CMD sleep infinity` (see
+# docker/sandbox-dev.Dockerfile) for a generic exec sandbox; data
+# services (postgres, redis, ...) work as-is.
 default_image = "python:3.14-slim"
 restart_policy_name = "on-failure"
 restart_max_retry_count = 3
@@ -83,7 +87,7 @@ auto_network = "sandbox-mcp"
 
 # Docker daemon connection.  Leave ``host`` empty (the default) to fall
 # back to the standard docker SDK env vars (``$DOCKER_HOST``,
-# ``$DOCKER_TLS_VERIFY``, ``$DOCKER_CERT_PATH``) and the docker CLI
+# ``$DOCKER_TLS_VERIFY`` / ``$DOCKER_CERT_PATH``) and the docker CLI
 # context (``~/.docker/config.json``).  Set ``host`` to point at a
 # specific daemon — useful when running sandbox-mcp inside a container
 # with the host socket bind-mounted at a non-default path, or when
@@ -131,32 +135,35 @@ socket_dir_prefix = "sandbox-mcp-ssh-"
 tmpfile_pattern = ".sandbox-mcp-tmp.XXXXXX"
 
 # Pre-defined SSH targets discoverable via env(action="list_targets").
-# The ``[default_machine] name`` is looked up in this table when the
-# backend is "ssh".  Each target name becomes the machine name for
-# ssh_connect.
+# The ``[default_machine] name`` is looked up here when the backend is
+# "ssh".  Each target uses a real PTY (ssh -tt), so interactive shells
+# and PowerShell prompts work normally.
+#
+# Targets with os_type="windows" use the PowerShell provider (UTF-8
+# console encoding, prompt function with exit code, PSReadLine
+# continuation prompt disabled).  ``encoding`` defaults to "gbk" for
+# Chinese Windows; pass "utf-8" if you've changed the box's code page.
 [ssh.targets]
 # Example:
 #   win-build = { host = "192.168.1.100", user = "builder", os_type = "windows", shell = "powershell.exe", encoding = "gbk" }
-
-[winrm]
-# Default WinRM connection parameters.
-default_port = 5986
-default_use_ssl = true
-default_transport = "ntlm"
-connect_timeout = 30
-
-# Pre-defined WinRM targets discoverable via env(action="list_targets").
-# The ``[default_machine] name`` is looked up in this table when the
-# backend is "winrm".
-[winrm.targets]
 # Example:
-#   win-server = { host = "windows-prod.contoso.com", user = "CONTOSO\\builder" }
+#   dev-box = { host = "10.0.0.5", user = "ubuntu" }
 
 [shell]
 # Buffer sizes and the default per-call output cap (in bytes).
 # HEAD_SIZE captures the start of the stream; TAIL_SIZE is a ring buffer
 # for the tail.  When output exceeds HEAD+TAIL, the head is dropped and
 # only the tail is kept.
+#
+# Shell semantics (all backends — local PTY, Docker exec, SSH):
+#   * A single random prompt token is installed at startup (bash PS1 /
+#     PowerShell `prompt` function).  No per-command markers.
+#   * States: ready | waiting | terminated.
+#   * `shell_exec(wait=true, timeout=10)` blocks until the next prompt;
+#     on timeout returns status="waiting" + a hint recommending
+#     wait=false + shell_read for long tasks.
+#   * Terminated shells stay in the registry; the agent must call
+#     shell_remove then shell_new (auto-replacement was removed).
 default_max_output = 50000  # 50 KB — also the truncation threshold
 head_size = 5120          # 5 KB
 tail_size = 46080         # 45 KB
@@ -173,18 +180,17 @@ default_search_limit = 50
 [default_machine]
 # Opt-in: provision a default machine at startup so the agent can use
 # shell_exec / file_* immediately, without an explicit
-# docker_run / ssh_connect.  Disabled by default -- the historical
-# behaviour is lazy (the agent creates its first machine on demand).
+# docker_run / ssh_connect.
 #
 # Provisioning failure is FATAL: when enabled, the server refuses to
 # start if the default machine can't be brought up (fail-closed).  The
 # docker_ps reconciliation pass runs first, so on a restart the
 # surviving container is re-adopted instead of re-created.
 #
-# This section holds only the trigger.  Connection params are looked up
-# by name: docker image = [docker] default_image; SSH target =
-# [ssh.targets.{name}]; WinRM target = [winrm.targets.{name}].
+# The ``name`` is used to look up connection params:
+#   backend="docker"  → container named ``name`` (image from [docker])
+#   backend="ssh"     → ``ssh.targets.{name}`` for host/user/port/key
 enabled = true
-backend = "docker"       # "docker", "ssh", or "winrm"
+backend = "docker"       # "docker" or "ssh"
 name = "admin"
 purpose = ""

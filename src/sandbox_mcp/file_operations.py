@@ -286,9 +286,9 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
 class FileOperations:
     """Read/write/patch/search via backend.exec_oneoff."""
 
-    def __init__(self, backend, provider: ShellProvider = BashShellProvider()):
+    def __init__(self, backend, provider: ShellProvider | None = None):
         self._backend = backend
-        self._provider = provider
+        self._provider = provider or BashShellProvider()
 
     # ---- read ----
 
@@ -583,7 +583,9 @@ class FileOperations:
         if not patch_text.strip():
             return {"status": "error", "error": "patch is empty"}
         encoded = base64.b64encode(patch_text.encode("utf-8")).decode("ascii")
-        cmd = f"{self._provider.base64_decode_command(encoded)} | {self._provider.patch_apply_command()}"
+        decode = self._provider.base64_decode_command(encoded)
+        apply = self._provider.patch_apply_command()
+        cmd = f"{decode} | {apply}"
         result = self._backend.exec_oneoff(machine, cmd)
         if result.get("exit_code") not in (0, None):
             return {"status": "error", "error": result.get("stderr") or "patch failed"}

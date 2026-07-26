@@ -1,490 +1,336 @@
-# sandbox-mcp - Sandbox Environment Manager MCP server
-# Copyright (C) 2024  Sandbox MCP Contributors
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-"""ShellSession: persistent bash process with dual-marker I/O and drain thread.
-
-States: idle | busy | running | terminated
-  idle       - no command running, bash at prompt
-  busy       - send(wait=true) blocking, lock held
-  running    - command executing in background (wait=false or timeout)
-  terminated - bash process exited (passive close)
-
-Buffer sizes and the default output cap are configurable via
-``[shell]`` in ``~/.sandbox-mcp/config.toml`` (or the
-``SANDBOX_MCP_SHELL_*`` env vars).
-"""
-
 from __future__ import annotations
 
 import contextlib
 import os
+import pty
 import re
 import select
 import signal
 import subprocess
-import sys
 import threading
 import time
 import uuid
 from collections import deque
 
 from sandbox_mcp.config import load as _load_config
-from sandbox_mcp.shell_provider import ShellProvider
 from sandbox_mcp.shell_providers.bash_provider import BashShellProvider
-
-_MARKER_RE = re.compile(r"__(START|END)_[0-9a-f]+__(?::\d+)?")
 
 
 class ShellUnhealthy(Exception):
-    """Raised when a freshly-created shell fails the health check.
-
-    The check sends ``true`` and expects a quick completed response.
-    Catching this in the registry prevents the broken shell from ever
-    being added to the active shell table — callers see a structured
-    ``error_kind="shell_unhealthy"`` instead of an opaque traceback.
-    """
+    pass
 
 
 def _health_check(session) -> None:
-    """Verify a session is alive by sending ``true``.
-
-    Healthy bash responds in ~ms; PowerShell on remote Windows may take
-    a few seconds for its first command.  Raises :class:`ShellUnhealthy`
-    on any failure.
-    """
     result = session.send("true", wait=True, timeout=10)
     if session.state == "terminated":
         raise ShellUnhealthy("shell died during health check")
-    if result.get("status") != "completed":
+    if result.get("status") != "ready":
         raise ShellUnhealthy(f"health check returned status={result.get('status')!r}")
 
 
 class ShellSession:
-    """A persistent shell (bash) process with drain-thread-based I/O."""
-
     def __init__(self, args=None, process=None, provider=None):
-        """Create a shell session.
-
-        Either *args* (a ``subprocess.Popen`` argument list) or *process*
-        (an object with ``.stdin``, ``.stdout``, ``.poll``, ``.kill``,
-        ``.wait`` methods matching ``subprocess.Popen``) must be provided.
-        The *process* form is used by backends that provide their own
-        process-like handle (e.g. the Docker backend's SDK-based exec).
-
-        *provider* is a :class:`ShellProvider` used for dual-marker protocol
-        commands.  Defaults to bash-style ``echo`` markers.
-        """
-        shell_cfg = _load_config().shell
-        self.HEAD_SIZE = shell_cfg.head_size
-        self.TAIL_SIZE = shell_cfg.tail_size
-        self.DEFAULT_MAX_OUTPUT = shell_cfg.default_max_output
+        cfg = _load_config().shell
+        self.HEAD_SIZE = cfg.head_size
+        self.TAIL_SIZE = cfg.tail_size
+        self.DEFAULT_MAX_OUTPUT = cfg.default_max_output
         self._args = args
         self._process = process
         self._external = process is not None
         self._provider = provider or BashShellProvider()
         self._lock = threading.Lock()
-        self._state = "idle"
+        self._state = "ready"
         self._last_command = None
         self._started_at = time.time()
-
-        # Drain thread buffer
         self._head = bytearray()
         self._tail = deque(maxlen=self.TAIL_SIZE)
         self._head_done = False
-
-        # Marker tracking
-        self._pending_start_marker = None
-        self._pending_end_marker = None
+        self._prompt_token = f"__SANDBOX_PROMPT_{uuid.uuid4().hex}__"
+        self._prompt_re = re.compile(
+            re.escape(self._prompt_token.encode(self._provider.output_encoding)) + rb":(-?\d+)\|"
+        )
+        self._prompt_event = threading.Event()
         self._pending_exit_code = None
-        self._start_event = threading.Event()
-        self._end_event = threading.Event()
-
+        self._pending_marker = None
+        self._use_prompt = self._provider.uses_prompt
         self._drain_thread = None
-        # Death-tracking fields.  Set when the underlying process
-        # transitions to terminated (drain thread EOF, broken pipe,
-        # or kill).  Read by ``_capture_for_replacement`` so the next
-        # shell can report why the previous one died.
-        self.exit_reason: str = "unknown"
-        self.last_exit_code: int | None = None
-        # One-shot snapshot of a prior shell's death info; cleared by
-        # ``_with_pid`` after the next ``send``/``read`` consumes it.
-        self._previous_shell_info: dict | None = None
+        self.exit_reason = "unknown"
+        self.last_exit_code = None
         self._start()
 
     def _start(self):
-        if self._external:
-            # External process was already started by the caller.
-            self._state = "idle"
-            self._drain_thread = threading.Thread(target=self._drain, daemon=True)
-            self._drain_thread.start()
-            return
-        kwargs = dict(
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            bufsize=0,
-        )
-        if sys.platform == "win32":
-            # CREATE_NEW_PROCESS_GROUP = 0x00000200
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            # New process group + session so close() can killpg() the
-            # whole tree.  Without this, a long-running child like
-            # ``sleep 60`` inherits bash's stdout pipe FD and keeps it
-            # open after bash is killed — the drain thread blocks on
-            # readline waiting for EOF that never comes, and close()
-            # hits its drain_thread.join(timeout=2) every time.
-            kwargs["start_new_session"] = True
-        self._process = subprocess.Popen(self._args, **kwargs)
-        self._state = "idle"
+        if not self._external:
+            master, slave = pty.openpty()
+            self._process = subprocess.Popen(
+                self._args,
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                close_fds=True,
+                start_new_session=True,
+            )
+            os.close(slave)
+            self._process.stdin = os.fdopen(os.dup(master), "wb", buffering=0)
+            self._process.stdout = os.fdopen(master, "rb", buffering=0)
         self._drain_thread = threading.Thread(target=self._drain, daemon=True)
         self._drain_thread.start()
-        setup = self._provider.setup_command
+        setup = self._provider.prompt_setup_command(self._prompt_token)
         if setup:
             try:
-                self._process.stdin.write(f"{setup}\n".encode("utf-8"))
+                self._process.stdin.write((setup + "\n").encode(self._provider.input_encoding))
                 self._process.stdin.flush()
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    raw = bytes(self._head) + bytes(self._tail)
+                    if b"SETUP_OK" in raw:
+                        self._clear_buffer()
+                        self._state = "ready"
+                        break
+                    time.sleep(0.05)
             except (BrokenPipeError, OSError):
-                pass
+                self._state = "terminated"
+        else:
+            self._state = "ready"
+
+    _ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][0-9;]*[^\a]*\a")
+
+    @classmethod
+    def _strip_ansi(cls, data: bytes) -> bytes:
+        cleaned = cls._ANSI_RE.sub(b"", data)
+        return cleaned.replace(b"\r", b"\n")
 
     def _drain(self):
-        """Background thread: read stdout line-by-line, detect markers.
-
-        bash emits `__START_<uuid>__` and `__END_<uuid>__:$?` on their own
-        lines (terminated by `\\n`), so `readline()` always returns a
-        complete marker. The user-visible output buffer (`_head` + `_tail`)
-        is filled from the same lines.
-        """
-        proc = self._process
-        stdout = proc.stdout  # BufferedReader; readline() returns bytes
-
+        stdout = self._process.stdout
+        carry = b""
         while True:
-            # Block until stdout has data or EOF.  The 0.1s poll loop we
-            # used to have here woke up 10x/sec per idle shell, burning
-            # CPU for nothing — readline() handles the partial-line wait
-            # itself, and EOF shows up as a ready fd.
             try:
                 select.select([stdout], [], [])
+                data = os.read(stdout.fileno(), 4096)
             except (ValueError, OSError):
                 break
-            try:
-                line = stdout.readline()
-            except (ValueError, OSError):
+            if not data:
                 break
-            if not line:
-                # EOF: bash closed its stdout.
-                break
-            start_tag = (
-                self._pending_start_marker.encode("utf-8") if self._pending_start_marker else None
-            )
-            end_tag = self._pending_end_marker.encode("utf-8") if self._pending_end_marker else None
-            # Skip the protocol's own marker lines so the head/tail
-            # buffer doesn't carry junk that _get_buffered_output has to
-            # regex-strip on every read.  The sub stays as a defensive
-            # fallback for any marker that slips through (e.g. if a
-            # future code path forgets the skip).
-            is_our_marker = False
-            if start_tag is not None and not self._start_event.is_set() and start_tag in line:
-                self._start_event.set()
-                is_our_marker = True
-            if end_tag is not None and not self._end_event.is_set():
-                end_prefix = end_tag + b":"
-                if end_prefix in line:
-                    after = line[line.index(end_prefix) + len(end_prefix) :]
-                    code_str = after.strip()
-                    try:
-                        self._pending_exit_code = int(code_str)
-                    except ValueError:
-                        self._pending_exit_code = 0
-                    self._end_event.set()
-                    is_our_marker = True
-            if not is_our_marker:
-                self._store_output(line)
-
-        # Bash closed stdout (EOF).  Capture exit info before the
-        # process attribute goes away so the next self-heal can
-        # report *why* the previous shell died.
+            combined = carry + data
+            stripped = self._strip_ansi(combined)
+            last = 0
+            for match in self._prompt_re.finditer(stripped):
+                self._store_output(stripped[last : match.start()])
+                self._pending_exit_code = int(match.group(1))
+                self._prompt_event.set()
+                last = match.end()
+            if last:
+                carry = stripped[last:]
+            elif self._pending_marker is not None:
+                marker_text = f"__END_{self._pending_marker}__:"
+                marker_bytes = marker_text.encode()
+                needle = b"\n" + marker_bytes
+                idx = stripped.find(needle)
+                if idx < 0 and stripped.startswith(marker_bytes):
+                    idx = 0
+                if idx >= 0:
+                    tl = idx + len(needle) if idx > 0 else len(marker_bytes)
+                    self._store_output(stripped[:idx])
+                    rest = stripped[tl:]
+                    m = re.match(rb"(-?\d+)", rest)
+                    self._pending_exit_code = int(m.group(1)) if m else 0
+                    self._prompt_event.set()
+                    carry = b""
+                else:
+                    keep = min(len(stripped), len(self._pending_marker or "") + 16)
+                    if len(stripped) > keep:
+                        self._store_output(stripped[:-keep])
+                        carry = stripped[-keep:]
+                    else:
+                        carry = stripped
+            else:
+                keep = min(len(stripped), len(self._prompt_token) + 16)
+                if len(stripped) > keep:
+                    self._store_output(stripped[:-keep])
+                    carry = stripped[-keep:]
+                else:
+                    carry = stripped
+        if carry:
+            self._store_output(carry)
         proc = self._process
-        if proc is not None:
-            rc = getattr(proc, "poll", lambda: None)()
-            if rc is None:
-                # Process still alive but pipe closed — should not
-                # happen for a normal Popen, defensive fallback.
-                self.exit_reason = "unknown"
-            elif rc < 0:
+        rc = proc.poll() if proc is not None else None
+        if rc is not None:
+            if rc < 0:
                 self.exit_reason = "signal"
                 self.last_exit_code = -rc
             else:
                 self.exit_reason = "exit"
                 self.last_exit_code = rc
-
         self._state = "terminated"
-        self._start_event.set()
-        self._end_event.set()
+        self._prompt_event.set()
+
+    def _clear_buffer(self):
+        self._head = bytearray()
+        self._tail = deque(maxlen=self.TAIL_SIZE)
+        self._head_done = False
 
     def _store_output(self, data):
-        """Feed one bytes line into the head/tail ring buffer."""
+        if not data:
+            return
         if not self._head_done:
             remaining = self.HEAD_SIZE - len(self._head)
-            if remaining > 0:
-                take = data[:remaining]
-                self._head.extend(take)
-                leftover = data[remaining:]
-                if leftover:
-                    self._tail.extend(leftover)
-                    self._head_done = True
-            else:
-                self._tail.extend(data)
+            self._head.extend(data[:remaining])
+            data = data[remaining:]
+            if data or remaining == 0:
                 self._head_done = True
-        else:
-            self._tail.extend(data)
+        self._tail.extend(data)
 
-    def attach_previous_shell(self, info: dict | None) -> None:
-        """Attach info about a previously-dead shell this one replaces.
-
-        ``_with_pid`` injects this into the next ``send``/``read``
-        result (one-shot) so agents can see why the previous bash died.
-        Pass ``None`` to explicitly clear any pending attachment.
-        """
-        self._previous_shell_info = info
-
-    def _with_pid(self, result: dict) -> dict:
-        """Tag a result dict with the current bash process id.
-
-        Agents track this across calls; a change means the shell was
-        restarted and in-memory state (exports, cwd, jobs) is gone.
-
-        Also injects ``previous_shell`` once (one-shot delivery) if a
-        ``_previous_shell_info`` snapshot is attached — see
-        :meth:`attach_previous_shell`.
-        """
-        pid = self.bash_pid
-        if pid is not None:
-            result["bash_pid"] = pid
-        if self._previous_shell_info is not None:
-            result["previous_shell"] = self._previous_shell_info
-            self._previous_shell_info = None  # one-shot
+    def _with_pid(self, result):
+        if self.bash_pid is not None:
+            result["bash_pid"] = self.bash_pid
         return result
 
-    def send(self, command, wait=True, timeout=30, max_output=None):
-        """Send a command to the shell.
-
-        wait=True:  block until __END_ marker or timeout
-        wait=False: block until __START_ marker (~2s), then return
-
-        ``max_output`` defaults to the configured per-session cap
-        (``[shell] default_max_output``); pass an explicit value to
-        override for one call.
-
-        Every result dict includes ``bash_pid`` so callers can detect
-        when the underlying shell has been restarted.
-        """
+    def send(self, command, wait=True, timeout=10, max_output=None):
         if max_output is None:
             max_output = self.DEFAULT_MAX_OUTPUT
         with self._lock:
-            if self._state in ("terminated", "closed"):
+            if self._state == "terminated":
                 return self._with_pid(
                     {
                         "output": "",
                         "exit_code": None,
                         "status": "error",
-                        "error": "Shell is terminated",
+                        "error": "Shell terminated. shell_remove + shell_new.",
                     }
                 )
-            if self._state in ("busy", "running"):
+            if self._state == "init":
                 return self._with_pid(
                     {
                         "output": "",
                         "exit_code": None,
                         "status": "error",
-                        "error": "Shell is busy (previous command still running). "
-                        "Use shell_read to check or shell_remove to kill.",
+                        "error": "Shell initializing. Retry in a moment.",
                     }
                 )
-
-            marker = uuid.uuid4().hex
-            start_marker = f"__START_{marker}__"
-            end_marker = f"__END_{marker}__"
-            start_cmd = self._provider.marker_start_command(marker)
-            end_cmd = self._provider.marker_end_command(marker)
-            full_input = f"{start_cmd}\n{command}\n{end_cmd}\n"
-
-            self._pending_start_marker = start_marker
-            self._pending_end_marker = end_marker
+            if self._state == "waiting":
+                return self._with_pid(
+                    {
+                        "output": "",
+                        "exit_code": None,
+                        "status": "error",
+                        "error": "Shell waiting. Use shell_read/write_stdin/Ctrl-C.",
+                    }
+                )
+            self._clear_buffer()
+            self._prompt_event.clear()
             self._pending_exit_code = None
-            self._start_event.clear()
-            self._end_event.clear()
-
-            self._head = bytearray()
-            self._tail = deque(maxlen=self.TAIL_SIZE)
-            self._head_done = False
             self._last_command = command
-
-            if wait:
-                self._state = "busy"
-            else:
-                self._state = "running"
-
+            self._state = "waiting"
             try:
-                enc = self._provider.input_encoding
-                self._process.stdin.write(full_input.encode(enc))
+                if self._use_prompt:
+                    cmd_bytes = (command + "\n").encode(self._provider.input_encoding)
+                else:
+                    marker = uuid.uuid4().hex
+                    self._pending_marker = marker
+                    cmd_bytes = (
+                        f"echo __START_{marker}__\n{command}\necho __END_{marker}__:$LASTEXITCODE\n"
+                    ).encode(self._provider.input_encoding)
+                self._process.stdin.write(cmd_bytes)
                 self._process.stdin.flush()
             except (BrokenPipeError, OSError):
                 self._state = "terminated"
                 self.exit_reason = "broken_pipe"
-                self.last_exit_code = None
                 return self._with_pid({"output": "", "exit_code": None, "status": "terminated"})
-
-        if wait:
-            if self._end_event.wait(timeout=timeout):
-                exit_code = self._pending_exit_code
-                output = self._get_buffered_output(max_output)
-                with self._lock:
-                    if self._state != "terminated":
-                        self._state = "idle"
-                return self._with_pid(
-                    {"output": output, "exit_code": exit_code, "status": "completed"}
-                )
-            output = self._get_buffered_output(max_output)
-            with self._lock:
-                if self._state != "terminated":
-                    self._state = "idle"
-            return self._with_pid(
-                {"output": output, "exit_code": None, "status": "timeout",
-                 "hint": "Command did not complete within timeout. "
-                         "Shell is still alive — retry the command or "
-                         "send a cleanup command like $null (PowerShell)."}
-            )
-
-        if self._start_event.wait(timeout=2.0):
-            with self._lock:
-                if self._state == "terminated":
-                    return self._with_pid({"status": "terminated", "confirmed": False})
-            return self._with_pid({"status": "running", "confirmed": True})
-        with self._lock:
+        if not wait:
+            return self._with_pid({"status": "waiting"})
+        if self._prompt_event.wait(timeout=timeout):
             if self._state == "terminated":
-                return self._with_pid({"status": "terminated", "confirmed": False})
-        return self._with_pid({"status": "running", "confirmed": False})
+                return self._with_pid(
+                    {
+                        "output": self._get_buffered_output(max_output),
+                        "status": "terminated",
+                    }
+                )
+            self._state = "ready"
+            return self._with_pid(
+                {
+                    "output": self._get_buffered_output(max_output, command),
+                    "exit_code": self._pending_exit_code,
+                    "status": "ready",
+                }
+            )
+        return self._with_pid(
+            {
+                "output": self._get_buffered_output(max_output, command),
+                "exit_code": None,
+                "status": "waiting",
+                "hint": "Command still running; use wait=false + shell_read.",
+            }
+        )
 
     def read(self):
-        """Non-blocking read of new output from the buffer."""
         with self._lock:
+            output = self._get_buffered_output(self.DEFAULT_MAX_OUTPUT, self._last_command)
             if self._state == "terminated":
-                output = self._get_buffered_output(self.DEFAULT_MAX_OUTPUT)
                 return self._with_pid({"output": output, "status": "terminated"})
-
-            if self._state == "idle":
-                return self._with_pid({"output": "", "status": "idle"})
-
-            if self._end_event.is_set() and self._pending_exit_code is not None:
-                output = self._get_buffered_output(self.DEFAULT_MAX_OUTPUT)
-                self._state = "idle"
+            if self._state == "init":
+                return self._with_pid({"output": output, "status": "init"})
+            if self._prompt_event.is_set():
+                self._state = "ready"
                 return self._with_pid(
                     {
                         "output": output,
                         "exit_code": self._pending_exit_code,
-                        "status": "completed",
+                        "status": "ready",
                     }
                 )
+            return self._with_pid({"output": output, "status": self._state})
 
-            output = self._get_buffered_output(self.DEFAULT_MAX_OUTPUT)
-            return self._with_pid({"output": output, "status": "running"})
+    def _decode_bytes(self, data: bytes) -> str:
+        return data.decode(self._provider.output_encoding, errors="replace")
 
-    @staticmethod
-    def _decode_bytes(data: bytes) -> str:
-        """Decode bytes, handling PowerShell encoding quirks.
+    _MARKER_RE = re.compile(rb"__START_\w+__\s*|__END_\w+__:\d+\s*")
 
-        1. UTF-16LE: naive UTF-8 decoding produces interleaved ``\\x00``.
-        2. GBK/ANSI: external programs output ANSI bytes (e.g. GBK on
-           Chinese Windows) which UTF-8 decoding renders as garbled CJK
-           characters.
-        """
-        text = data.decode("utf-8", errors="replace")
-        if "\x00" in text:
-            try:
-                return data.decode("utf-16-le", errors="replace").strip("\x00")
-            except Exception:
-                pass
-        if "\ufffd" in text:
-            try:
-                decoded = data.decode("gbk", errors="replace")
-                if decoded.count("\ufffd") < text.count("\ufffd"):
-                    return decoded
-            except Exception:
-                pass
-        return text
-
-    def _get_buffered_output(self, max_output):
-        """Get buffered output, truncating if necessary."""
-        head_text = self._decode_bytes(self._head)
-        tail_text = self._decode_bytes(bytes(self._tail))
-
-        full = head_text + tail_text
-
+    def _get_buffered_output(self, max_output, command=None):
+        raw = bytes(self._head) + bytes(self._tail)
+        raw = self._MARKER_RE.sub(b"", raw)
+        full = self._decode_bytes(raw).replace("\r", "")
+        if command and full.startswith(command + "\n"):
+            full = full[len(command) + 1 :]
+        full = full.strip("\n")
         if len(full) <= max_output:
-            return full.strip("\n")
-
+            return full
         truncated = full[-max_output:]
-        notice = f"\n[Output truncated: showing last {max_output} of {len(full)} chars]\n"
-        return (notice + truncated).strip("\n")
+        return f"[Output truncated: showing last {max_output} of {len(full)} chars]\n{truncated}"
 
     def write_stdin(self, data):
-        """Write raw data to stdin (for interactive processes)."""
-        if self._state in ("terminated", "closed"):
+        if self._state == "terminated":
             return {"bytes_written": 0, "error": "Shell is terminated"}
         try:
-            encoded = data.encode("utf-8")
+            encoded = data.encode(self._provider.input_encoding)
             self._process.stdin.write(encoded)
             self._process.stdin.flush()
             return {"bytes_written": len(encoded)}
-        except (BrokenPipeError, OSError) as e:
+        except (BrokenPipeError, OSError) as exc:
             self._state = "terminated"
-            return {"bytes_written": 0, "error": str(e)}
+            return {"bytes_written": 0, "error": str(exc)}
 
     def close(self):
-        """Kill the shell process and stop drain thread."""
-        with self._lock:
-            self._state = "terminated"
-        if self._process:
+        self._state = "terminated"
+        proc = self._process
+        if proc is not None:
             try:
-                if sys.platform == "win32":
-                    # Windows: no process groups; use TerminateProcess.
-                    self._process.kill()
-                elif hasattr(self._process, "pid") and self._process.pid is not None:
-                    # Kill the whole process group (bash + any descendants
-                    # like ``sleep 60``) so the stdout pipe closes
-                    # immediately.
-                    pgid = os.getpgid(self._process.pid)
-                    os.killpg(pgid, signal.SIGKILL)
+                if not self._external and proc.pid is not None:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 else:
-                    self._process.kill()
-                self._process.wait(timeout=5)
-            except (ProcessLookupError, PermissionError):
-                with contextlib.suppress(Exception):
-                    self._process.kill()
-                with contextlib.suppress(Exception):
-                    self._process.wait(timeout=5)
+                    proc.kill()
+                proc.wait(timeout=5)
             except Exception:
-                pass
-            self._process = None
-        self._start_event.set()
-        self._end_event.set()
+                with contextlib.suppress(Exception):
+                    proc.kill()
+            for stream in (
+                getattr(proc, "stdin", None),
+                getattr(proc, "stdout", None),
+            ):
+                with contextlib.suppress(Exception):
+                    stream.close()
+        self._prompt_event.set()
         if self._drain_thread:
             self._drain_thread.join(timeout=2)
-            self._drain_thread = None
 
     @property
     def state(self):
@@ -492,19 +338,8 @@ class ShellSession:
 
     @property
     def bash_pid(self):
-        """Underlying bash process identifier (or None for external procs).
-
-        Local ``bash`` Popen: real OS PID (int).
-        External ``DockerExecProcess`` / SSH: backend-specific ID (str) —
-        for Docker it's the exec instance ID returned by the daemon.
-        Changes between calls mean the shell was restarted, so any
-        in-memory state (exports, cwd, jobs) is gone.
-        """
         proc = self._process
-        if proc is None:
-            return None
-        # DockerExecProcess exposes exec_id publicly; Popen exposes pid.
-        return getattr(proc, "exec_id", None) or getattr(proc, "pid", None)
+        return getattr(proc, "exec_id", None) or getattr(proc, "pid", None) if proc else None
 
     @property
     def last_command(self):

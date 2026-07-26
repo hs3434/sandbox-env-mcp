@@ -100,3 +100,6 @@ class Backend(ABC):
         ensure that a crash mid-write leaves the existing target file
         untouched.
         """
+
+    def get_provider(self, name: str):
+        return getattr(self, "_provider", {}).get(name)

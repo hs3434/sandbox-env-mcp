@@ -39,7 +39,7 @@ def test_help_returns_operations_and_pointers(sandbox_env):
     actions = [op["action"] for op in result["operations"]]
     assert "list_targets" in actions
     assert "docker_run" in actions
-    # connect/close only appear when [ssh.targets] or [winrm.targets] have entries
+    # connect/close only appear when [ssh.targets] have entries
     assert "docker_build" in actions
     assert "docker_ps" in actions
 
@@ -165,7 +165,7 @@ def test_shell_new(sandbox_env):
     shell = MagicMock()
     # Make the session's state attribute a real string (not a Mock) so
     # the dispatcher's result building can read it without recursing.
-    shell.state = "idle"
+    shell.state = "ready"
     backend.open_shell.return_value = shell
     sandbox_env._machines.resolve_machine.return_value = "dev"
     sandbox_env._machines.get_backend.return_value = backend
@@ -174,27 +174,28 @@ def test_shell_new(sandbox_env):
     backend.open_shell.assert_called_once_with("dev")
     sandbox_env._shells.open.assert_called_once_with("dev", shell, purpose="server")
     # shell_new returns shell_id+machine+state so the agent can see
-    # whether the new session is idle and ready without a shell_list call.
+    # whether the new session is ready at a prompt without a shell_list call.
     assert result["shell_id"] == "sh_abc"
     assert result["machine"] == "dev"
-    assert result["state"] == "idle"
-    # bash_pid is only surfaced for live states (busy/running), not idle.
+    assert result["state"] == "ready"
+    # bash_pid is only surfaced for live states (waiting), not ready.
     assert "bash_pid" not in result
 
 
 def test_shell_new_includes_bash_pid_when_running(sandbox_env):
-    """A shell_new with a session already busy carries bash_pid, so the
-    agent can e.g. attach a debugger without a separate lookup."""
+    """A shell_new with a session waiting on a running command carries
+    bash_pid, so the agent can e.g. attach a debugger without a separate
+    lookup."""
     backend = MagicMock()
     shell = MagicMock()
-    shell.state = "busy"
+    shell.state = "waiting"
     shell.bash_pid = 4242
     backend.open_shell.return_value = shell
     sandbox_env._machines.resolve_machine.return_value = "dev"
     sandbox_env._machines.get_backend.return_value = backend
     sandbox_env._shells.open.return_value = "sh_abc"
     result = sandbox_env.dispatch("shell_new", {"machine": "dev"})
-    assert result["state"] == "busy"
+    assert result["state"] == "waiting"
     assert result["bash_pid"] == 4242
 
 
@@ -206,7 +207,7 @@ def test_shell_remove(sandbox_env):
 
 def test_shell_list(sandbox_env):
     sandbox_env._shells.list_shells.return_value = [
-        {"shell_id": "sh_abc", "machine": "dev", "status": "idle"}
+        {"shell_id": "sh_abc", "machine": "dev", "status": "ready"}
     ]
     result = sandbox_env.dispatch("shell_list", {})
     assert len(result) == 1
@@ -621,3 +622,41 @@ def test_docker_logs_requires_machine(sandbox_env):
     result = sandbox_env.dispatch("docker_logs", {})
     assert "error" in result
     assert "machine" in result["error"]
+
+
+# ---------- _op_shell_new canonical-state contract ----------
+#
+# bash_pid is only useful to surface when the new session is actively
+# running a command (state='waiting'); a fresh 'ready' session sitting
+# at a prompt does not need it.  These tests pin the new protocol so the
+# legacy ('busy', 'running') check cannot silently regress.
+
+
+def test_shell_new_surfaces_bash_pid_when_waiting(sandbox_env):
+    """A session in the canonical 'waiting' state surfaces bash_pid."""
+    backend = MagicMock()
+    shell = MagicMock()
+    shell.state = "waiting"
+    shell.bash_pid = 4242
+    backend.open_shell.return_value = shell
+    sandbox_env._machines.resolve_machine.return_value = "dev"
+    sandbox_env._machines.get_backend.return_value = backend
+    sandbox_env._shells.open.return_value = "sh_abc"
+    result = sandbox_env.dispatch("shell_new", {"machine": "dev"})
+    assert result["state"] == "waiting"
+    assert result["bash_pid"] == 4242
+
+
+def test_shell_new_omits_bash_pid_when_ready(sandbox_env):
+    """A session sitting at a prompt (state='ready') does not expose bash_pid."""
+    backend = MagicMock()
+    shell = MagicMock()
+    shell.state = "ready"
+    shell.bash_pid = 1111
+    backend.open_shell.return_value = shell
+    sandbox_env._machines.resolve_machine.return_value = "dev"
+    sandbox_env._machines.get_backend.return_value = backend
+    sandbox_env._shells.open.return_value = "sh_abc"
+    result = sandbox_env.dispatch("shell_new", {"machine": "dev"})
+    assert result["state"] == "ready"
+    assert "bash_pid" not in result

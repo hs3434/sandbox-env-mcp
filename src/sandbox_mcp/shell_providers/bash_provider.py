@@ -29,8 +29,7 @@ class BashShellProvider(ShellProvider):
 
     # ---- File read ----
 
-    def file_read_command(self, path: str, offset: int, limit: int,
-                          max_size: int) -> str:
+    def file_read_command(self, path: str, offset: int, limit: int, max_size: int) -> str:
         q_path = shlex.quote(path)
         end_line = offset + limit - 1
         return (
@@ -81,9 +80,7 @@ class BashShellProvider(ShellProvider):
 
     def search_files_command(self, pattern: str, path: str, limit: int) -> str:
         glob_pattern = (
-            f"*{pattern}"
-            if "/" not in pattern and not pattern.startswith("*")
-            else pattern
+            f"*{pattern}" if "/" not in pattern and not pattern.startswith("*") else pattern
         )
         return (
             f"set -o pipefail; "
@@ -91,14 +88,12 @@ class BashShellProvider(ShellProvider):
             f"{shlex.quote(path)} 2>/dev/null | head -n {limit}"
         )
 
-    def search_content_command(self, pattern: str, path: str,
-                                file_glob: str, limit: int,
-                                output_mode: str,
-                                context: int) -> str:
+    def search_content_command(
+        self, pattern: str, path: str, file_glob: str, limit: int, output_mode: str, context: int
+    ) -> str:
         q_pattern = shlex.quote(pattern)
         q_path = shlex.quote(path)
-        parts = ["set -o pipefail; rg",
-                 "--line-number", "--no-heading", "--with-filename"]
+        parts = ["set -o pipefail; rg", "--line-number", "--no-heading", "--with-filename"]
         if context > 0:
             parts += ["-C", str(context)]
         if file_glob:
@@ -110,10 +105,5 @@ class BashShellProvider(ShellProvider):
         parts += [q_pattern, q_path, "|", "head", "-n", str(limit)]
         return " ".join(parts)
 
-    # ---- Dual-marker protocol ----
-
-    def marker_start_command(self, marker_id: str) -> str:
-        return f"echo __START_{marker_id}__"
-
-    def marker_end_command(self, marker_id: str) -> str:
-        return f"echo __END_{marker_id}__:$?"
+    def prompt_setup_command(self, token: str) -> str:
+        return f"PROMPT_COMMAND='__rc=$?' PS1='{token}:${{__rc}}|'; echo SETUP_OK"

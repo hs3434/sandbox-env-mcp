@@ -78,7 +78,7 @@ def test_shell_exec_wait_true(docker_target):
         },
     )
     data = json.loads(result[0].text)
-    assert data["status"] == "completed"
+    assert data["status"] == "ready"
     assert "hello_from_docker" in data["output"]
 
 
@@ -130,7 +130,7 @@ def test_shell_exec_wait_false_then_read(docker_target):
 
     final = docker_target.call_tool("shell_read", {"shell_id": shell_id})
     final_data = json.loads(final[0].text)
-    assert final_data["status"] in ("running", "completed", "idle")
+    assert final_data["status"] in ("ready", "waiting", "terminated")
 
 
 def test_file_operations_in_docker(docker_target):

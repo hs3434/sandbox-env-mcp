@@ -263,8 +263,7 @@ key = "/k/id_ed25519"
     ):
         mock_ssh = mock_ssh_cls.return_value
         mock_ssh.create.return_value = TargetInfo(name="remote", backend="ssh", status="running")
-        with patch("sandbox_mcp.server.WinRMBackend"):
-            srv = SandboxServer()
+        srv = SandboxServer()
 
     mock_ssh.create.assert_called_once()
     kwargs = mock_ssh.create.call_args.kwargs
@@ -331,7 +330,6 @@ def test_provision_default_machine_ssh_requires_target(monkeypatch):
     with (
         patch("sandbox_mcp.server.DockerBackend"),
         patch("sandbox_mcp.server.SSHBackend"),
-        patch("sandbox_mcp.server.WinRMBackend"),
         pytest.raises(RuntimeError, match=r"requires \[ssh.targets.admin\]"),
     ):
         SandboxServer()
@@ -380,3 +378,86 @@ def test_handle_shell_exec_returns_shell_create_failed_error_kind(monkeypatch, s
     assert result["error_kind"] == "shell_create_failed"
     assert "docker daemon down" in result["error"]
     assert result["machine"] == "dev"
+
+
+# ---------- shell protocol schema drift guards ----------
+#
+# These tests assert the agent-visible tool definitions use the canonical
+# shell protocol (ready / waiting / terminated) and do NOT expose the
+# historical idle / busy / completed vocabulary that an LLM could
+# otherwise latch onto when interpreting responses.
+
+
+def _tool(server, name):
+    tools = server.list_tools()
+    matches = [t for t in tools if t.name == name]
+    assert matches, f"tool {name!r} not exposed"
+    return matches[0]
+
+
+def test_shell_new_description_documents_canonical_states(server):
+    """shell_new's description must refer to canonical shell states, not
+    the legacy busy/idle vocabulary."""
+    tool = _tool(server, "shell_new")
+    desc = tool.description.lower()
+    # The canonical scenario for shell_new is "the default shell is busy
+    # running a long command"; rewrite in terms of waiting/ready/terminated.
+    assert "busy" not in desc, (
+        f"shell_new description still references legacy 'busy': {tool.description!r}"
+    )
+    assert any(word in desc for word in ("waiting", "ready", "terminated")), (
+        f"shell_new description does not reference any canonical state: {tool.description!r}"
+    )
+
+
+def test_shell_remove_description_lists_canonical_states(server):
+    """shell_remove advertises that it works on any shell state.  The
+    enumerated states must be the canonical three, not the legacy four."""
+    tool = _tool(server, "shell_remove")
+    desc = tool.description.lower()
+    for state in ("ready", "waiting", "terminated"):
+        assert state in desc, (
+            f"shell_remove description missing canonical state {state!r}: {tool.description!r}"
+        )
+    for legacy in ("idle", "busy"):
+        assert legacy not in desc, (
+            f"shell_remove description still references legacy {legacy!r}: {tool.description!r}"
+        )
+
+
+def test_shell_exec_input_schema_documents_wait_default(server):
+    """shell_exec schema must tell the agent that wait defaults to true."""
+    tool = _tool(server, "shell_exec")
+    props = tool.inputSchema["properties"]
+    assert props["wait"]["description"].lower().startswith("wait"), (
+        f"shell_exec.wait description missing 'wait' prefix: {props['wait']!r}"
+    )
+    assert "true" in props["wait"]["description"].lower(), (
+        f"shell_exec.wait description missing 'true' default hint: {props['wait']!r}"
+    )
+    timeout = props["timeout"]["description"].lower()
+    assert "10" in timeout, f"shell_exec.timeout description missing '10': {props['timeout']!r}"
+
+
+def test_shell_exec_error_guidance_offers_remove_and_new(server, monkeypatch):
+    """When shell_exec returns a waiting-or-terminated error the response
+    must expose escape_routes naming both shell_new and shell_remove."""
+    from sandbox_mcp.backends.base import TargetInfo
+
+    session = MagicMock()
+    session.send.return_value = {
+        "output": "",
+        "exit_code": None,
+        "status": "error",
+        "error": "Shell is waiting for the previous command.",
+    }
+    server.machines.adopt(
+        "dev", MagicMock(), TargetInfo(name="dev", backend="docker", status="running")
+    )
+    monkeypatch.setattr(server.shells, "get", lambda shell_id: session)
+
+    result = server._handle_shell_exec({"command": "echo hi", "shell_id": "sh_x", "machine": "dev"})
+    assert "escape_routes" in result, f"missing escape_routes: {result!r}"
+    routes = result["escape_routes"]
+    assert "shell_new" in routes, f"escape_routes missing shell_new: {routes!r}"
+    assert "shell_remove" in routes, f"escape_routes missing shell_remove: {routes!r}"

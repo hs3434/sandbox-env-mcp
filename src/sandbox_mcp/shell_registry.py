@@ -73,26 +73,7 @@ class ShellRegistry:
     def get_or_create_default(self, machine: str, factory: Callable[[], ShellSession]) -> str:
         existing = self._default_shells.get(machine)
         if existing and existing in self._shells:
-            entry = self._shells[existing]
-            # Self-heal: if the default shell has died (e.g. agent ran
-            # ``exit`` or it OOM'd), drop it and fall through to create a
-            # fresh one.  Otherwise shell_exec would return a confusing
-            # "Shell is terminated" error on every call until the agent
-            # explicitly notices and calls shell_remove.
-            if entry["session"].state != "terminated":
-                return existing
-            # Capture the dying session's info BEFORE close() — close()
-            # nulls out _process, making bash_pid unreadable.  Attach
-            # the snapshot to the replacement so the agent sees the
-            # previous_shell field on its next shell_exec response.
-            prev = _capture_for_replacement(entry["session"])
-            self.close(existing)
-            session = factory()
-            shell_id = self.open(machine, session, purpose="default")
-            if prev is not None:
-                session.attach_previous_shell(prev)
-            self._default_shells[machine] = shell_id
-            return shell_id
+            return existing
         session = factory()
         shell_id = self.open(machine, session, purpose="default")
         self._default_shells[machine] = shell_id
@@ -123,7 +104,7 @@ class ShellRegistry:
             }
             if session.state == "terminated":
                 item["hint"] = "Process exited. Call shell_remove to clean up."
-            elif session.state in ("busy", "running"):
+            elif session.state == "waiting":
                 item["bash_pid"] = session.bash_pid
             result.append(item)
         return result
@@ -145,22 +126,3 @@ class ShellRegistry:
             self.close(sid)
             count += 1
         return count
-
-
-def _capture_for_replacement(dead_session):
-    """Snapshot info about a dead session.  Returns None if there's
-    nothing meaningful to report (e.g. session never had a real process).
-
-    Called BEFORE ``close()`` so ``bash_pid`` is still readable
-    (``close()`` nulls out ``_process``).  The returned dict becomes
-    the ``previous_shell`` field on the replacement shell's first
-    response.
-    """
-    if dead_session.bash_pid is None:
-        return None
-    return {
-        "previous_bash_pid": dead_session.bash_pid,
-        "last_command": dead_session.last_command,
-        "exit_reason": dead_session.exit_reason,
-        "exit_code": dead_session.last_exit_code,
-    }

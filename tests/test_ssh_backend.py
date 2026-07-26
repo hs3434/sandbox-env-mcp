@@ -97,6 +97,7 @@ def test_ssh_open_shell(ssh_backend):
         mock_run.return_value = MagicMock(returncode=0, stdout="")
         shell = ssh_backend.open_shell("remote")
         assert "ssh" in shell._args[0]
+        assert "-tt" in shell._args
         shell.close()
 
 

@@ -1,6 +1,7 @@
 """Tests for ShellProvider ABC, BashShellProvider, and PowerShellProvider."""
 
 import pytest
+
 from sandbox_mcp.shell_provider import ShellProvider, ShellProviderFactory
 
 
@@ -85,13 +86,11 @@ class TestBashShellProvider:
         # The path appears inside quotes in set -e; t=...;
         assert "my app.py" in script
 
-    def test_marker_start(self, bash):
-        cmd = bash.marker_start_command("abc123")
-        assert cmd == "echo __START_abc123__"
-
-    def test_marker_end(self, bash):
-        cmd = bash.marker_end_command("abc123")
-        assert cmd == "echo __END_abc123__:$?"
+    def test_prompt_setup(self, bash):
+        cmd = bash.prompt_setup_command("abc123")
+        assert "PS1" in cmd
+        assert "abc123" in cmd
+        assert "SETUP_OK" in cmd
 
     def test_base64_decode_command(self, bash):
         cmd = bash.base64_decode_command("aGVsbG8=")
@@ -110,31 +109,23 @@ class TestBashShellProvider:
         assert "head -n 100" in cmd
 
     def test_search_content_command(self, bash):
-        cmd = bash.search_content_command(
-            "TODO", "/workspace", "*.py", 50, "content", 0
-        )
+        cmd = bash.search_content_command("TODO", "/workspace", "*.py", 50, "content", 0)
         assert "rg --line-number" in cmd
         assert "TODO" in cmd
         assert "head -n 50" in cmd
 
     def test_search_content_files_only(self, bash):
-        cmd = bash.search_content_command(
-            "TODO", "/", "", 10, "files_only", 0
-        )
+        cmd = bash.search_content_command("TODO", "/", "", 10, "files_only", 0)
         assert "-l" in cmd
         assert "TODO" in cmd
 
     def test_search_content_count_mode(self, bash):
-        cmd = bash.search_content_command(
-            "TODO", "/", "", 10, "count", 0
-        )
+        cmd = bash.search_content_command("TODO", "/", "", 10, "count", 0)
         assert "-c" in cmd
         assert "TODO" in cmd
 
     def test_search_content_with_context(self, bash):
-        cmd = bash.search_content_command(
-            "TODO", "/", "", 10, "content", 3
-        )
+        cmd = bash.search_content_command("TODO", "/", "", 10, "content", 3)
         assert "-C 3" in cmd
 
 
@@ -162,14 +153,9 @@ class TestPowerShellProvider:
         cmd = ps.file_read_command("C:\\workspace\\it's.py", 1, 10, 1048576)
         assert "it''s" in cmd
 
-    def test_markers_use_write_host(self, ps):
-        start = ps.marker_start_command("abc")
-        end = ps.marker_end_command("abc")
-        assert "Write-Host" in start
-        assert "Write-Host" in end
-        assert "LASTEXITCODE" in end
-        assert "__START_abc__" in start
-        assert "__END_abc__" in end
+    def test_prompt_setup(self, ps):
+        setup = ps.prompt_setup_command("abc")
+        assert setup == ""
 
     def test_atomic_write_script(self, ps):
         script = ps.atomic_write_script("C:\\workspace\\app.py")
@@ -209,26 +195,18 @@ class TestPowerShellProvider:
         assert "Select-Object -First 100" in cmd
 
     def test_search_content_command(self, ps):
-        cmd = ps.search_content_command(
-            "TODO", "C:\\workspace", "*.py", 50, "content", 0
-        )
+        cmd = ps.search_content_command("TODO", "C:\\workspace", "*.py", 50, "content", 0)
         assert "rg --line-number" in cmd
         assert "Select-Object -First 50" in cmd
 
     def test_search_content_files_only(self, ps):
-        cmd = ps.search_content_command(
-            "TODO", "C:\\", "", 10, "files_only", 0
-        )
+        cmd = ps.search_content_command("TODO", "C:\\", "", 10, "files_only", 0)
         assert "-l" in cmd
 
     def test_search_content_count_mode(self, ps):
-        cmd = ps.search_content_command(
-            "TODO", "C:\\", "", 10, "count", 0
-        )
+        cmd = ps.search_content_command("TODO", "C:\\", "", 10, "count", 0)
         assert "-c" in cmd
 
     def test_search_content_with_context(self, ps):
-        cmd = ps.search_content_command(
-            "TODO", "C:\\", "", 10, "content", 3
-        )
+        cmd = ps.search_content_command("TODO", "C:\\", "", 10, "content", 3)
         assert "-C 3" in cmd

@@ -41,7 +41,6 @@ dev = [
     "ruff>=0.6.0",
     "mypy>=1.10.0",
 ]
-winrm = ["pywinrm>=0.5.0"]
 
 [project.scripts]
 sandbox-mcp = "sandbox_mcp.server:main"

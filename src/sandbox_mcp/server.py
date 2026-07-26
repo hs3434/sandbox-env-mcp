@@ -66,7 +66,6 @@ from sandbox_mcp.auth import (
 )
 from sandbox_mcp.backends.docker_backend import DockerBackend
 from sandbox_mcp.backends.ssh_backend import SSHBackend
-from sandbox_mcp.backends.winrm_backend import WinRMBackend
 from sandbox_mcp.config import load as _load_config
 from sandbox_mcp.file_operations import FileOperations
 from sandbox_mcp.sandbox_env import SandboxEnv
@@ -120,8 +119,17 @@ TOOL_DEFINITIONS = [
     {
         "name": "shell_exec",
         "description": (
-            "Execute a shell command on the target machine. wait=true "
-            "(default) blocks until completion or timeout. [machine]"
+            "Execute a shell command on the target machine. The shell "
+            "reports one of three states: ready (sitting at a prompt), "
+            "waiting (a command is running), or terminated (the process "
+            "exited). With wait=true (default) the call blocks until the "
+            "shell returns to ready or hits timeout (default 10s); on "
+            'timeout the response is status="waiting". For long-running '
+            "commands prefer wait=false (returns immediately with "
+            'status="waiting") and follow up with shell_read to poll '
+            "incremental output. If the shell is terminated, call "
+            "shell_remove then shell_new to create a replacement. "
+            "[machine]"
         ),
         "inputSchema": {
             "type": "object",
@@ -133,7 +141,7 @@ TOOL_DEFINITIONS = [
                 },
                 "machine": {"type": "string"},
                 "wait": {"type": "boolean", "description": "Wait for completion (default: true)"},
-                "timeout": {"type": "integer", "description": "Seconds to wait (default: 30)"},
+                "timeout": {"type": "integer", "description": "Seconds to wait (default: 10)"},
                 "max_output": {
                     "type": "integer",
                     "description": "Max output bytes (default: 50000)",
@@ -144,7 +152,13 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "shell_read",
-        "description": "Read new output from a shell (non-blocking).",
+        "description": (
+            "Read buffered output from a shell (non-blocking). Returns "
+            "the current state: ready (prompt is set, command finished), "
+            "waiting (command still running — call again later), or "
+            "terminated (process exited; call shell_remove + shell_new to "
+            "continue)."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -237,7 +251,7 @@ TOOL_DEFINITIONS = [
             "one action). action=status shows current state. Management "
             "actions (shell_new, shell_remove, shell_list, machine_list, "
             "default_set) are also available as top-level tools. See "
-            "action=help note for how sandbox_shell_exec routes per backend."
+            "action=help note for how shell_exec routes per backend."
         ),
         "inputSchema": {
             "type": "object",
@@ -264,7 +278,9 @@ TOOL_DEFINITIONS = [
         "name": "shell_new",
         "description": (
             "Create an additional shell session on a machine. "
-            "Use when the default shell is busy. [machine]"
+            "Use when the default shell is waiting (a command is still "
+            "running) or terminated, so a fresh shell is needed without "
+            "disturbing the in-flight command. [machine]"
         ),
         "inputSchema": {
             "type": "object",
@@ -277,7 +293,9 @@ TOOL_DEFINITIONS = [
     {
         "name": "shell_remove",
         "description": (
-            "Terminate and remove a shell session (any state: idle, busy, running, terminated)."
+            "Terminate and remove a shell session. Works in any state: "
+            "ready (sitting at a prompt), waiting (a command is running), "
+            "or terminated (the process already exited)."
         ),
         "inputSchema": {
             "type": "object",
@@ -285,6 +303,21 @@ TOOL_DEFINITIONS = [
                 "shell_id": {"type": "string", "description": "Shell to remove"},
             },
             "required": ["shell_id"],
+        },
+    },
+    {
+        "name": "write_stdin",
+        "description": (
+            "Write data to a shell's stdin. Send Ctrl-C (\\x03) to cancel "
+            "a running command, or continue multi-line input."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "shell_id": {"type": "string", "description": "Shell to write to"},
+                "data": {"type": "string", "description": "Data to send"},
+            },
+            "required": ["shell_id", "data"],
         },
     },
     {
@@ -366,10 +399,8 @@ class SandboxServer:
         self.shells = ShellRegistry()
         self._docker_backend = DockerBackend()
         self._ssh_backend = SSHBackend()
-        self._winrm_backend = WinRMBackend()
         self.sandbox_env = SandboxEnv(
-            self.machines, self.shells, self._docker_backend,
-            self._ssh_backend, winrm_backend=self._winrm_backend,
+            self.machines, self.shells, self._docker_backend, self._ssh_backend
         )
         # Look up DEFAULT_AUDIT_LOGGER via the module each time, not via
         # a captured ``from X import Y`` binding — main_http() calls
@@ -442,24 +473,10 @@ class SandboxServer:
                     purpose=cfg.purpose,
                     **target,
                 )
-            elif cfg.backend == "winrm":
-                wr_cfg = _load_config().winrm
-                target = wr_cfg.targets.get(name)
-                if not target:
-                    raise RuntimeError(
-                        f"[default_machine] backend='winrm' with name={name!r} "
-                        f"requires [winrm.targets.{name}] to be defined"
-                    )
-                info = self.machines.register(
-                    name,
-                    self._winrm_backend,
-                    purpose=cfg.purpose,
-                    **target,
-                )
             else:
                 raise RuntimeError(
                     f"[default_machine] unknown backend: {cfg.backend!r} "
-                    "(expected 'docker', 'ssh', or 'winrm')"
+                    "(expected 'docker' or 'ssh')"
                 )
         except Exception as e:
             raise RuntimeError(
@@ -547,7 +564,7 @@ class SandboxServer:
     # ---- shell handlers ----
 
     def _handle_shell_exec(self, args):
-        timeout = args.get("timeout", 30)
+        timeout = args.get("timeout", 10)
         wait = args.get("wait", True)
         max_output = args.get("max_output", 50000)
         shell_id = args.get("shell_id")
@@ -580,7 +597,9 @@ class SandboxServer:
             session = self.shells.get(shell_id)
 
         result = session.send(args["command"], wait=wait, timeout=timeout, max_output=max_output)
-        if result.get("status") == "error" and "busy" in result.get("error", ""):
+        if result.get("status") == "error" and any(
+            word in result.get("error", "").lower() for word in ("waiting", "terminated")
+        ):
             result["shell_id"] = shell_id
             result["escape_routes"] = {
                 "shell_new": "Create a fresh shell with shell_new()",
@@ -594,11 +613,17 @@ class SandboxServer:
             return {"error": f"Unknown shell_id: {args['shell_id']}"}
         return session.read()
 
+    def _handle_write_stdin(self, args):
+        session = self.shells.get(args["shell_id"])
+        if session is None:
+            return {"error": f"Unknown shell_id: {args['shell_id']}"}
+        return session.write_stdin(args["data"])
+
     # ---- file handlers ----
 
     def _get_file_ops(self, machine):
         backend = self.machines.get_backend(machine)
-        return FileOperations(backend)
+        return FileOperations(backend, backend.get_provider(machine))
 
     def _handle_file_read(self, args):
         machine = self._resolve_machine(args)
