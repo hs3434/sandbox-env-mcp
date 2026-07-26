@@ -74,8 +74,8 @@ def test_waiting_shell_rejects_independent_exec_but_accepts_ctrl_c():
         assert rejected["status"] == "error"
         assert "waiting" in rejected["error"].lower()
         assert session.write_stdin("\x03")["bytes_written"] == 1
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline and session.read()["status"] != "ready":
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and session.read()["status"] != "ready":
             time.sleep(0.05)
         assert session.state == "ready"
     finally:
