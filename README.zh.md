@@ -180,7 +180,7 @@ name = "dev"
 - `docker_run` 现在**会话内幂等**：若同名容器已存在，会重新挂载（已停止则
   启动），而不是因名字冲突报错。响应里带 `note`（"reattached to existing
   container ..."），让 agent 知道这是复用而非新建。
-- `docker_run` 不再覆盖镜像自带的 CMD。容器按镜像作者设定的 CMD / ENTRYPOINT
+- `docker_run` 不覆盖镜像自带的 CMD。容器按镜像作者设定的 CMD / ENTRYPOINT
   运行——`postgres:16` 真的会启动 postgres，`redis:7` 真的会启动 redis，
   等等。想用普通镜像做纯 exec 沙箱，自己 build 一个 `CMD sleep infinity`
   （或任何常驻 shell）的镜像，再对那个镜像 `docker_run`。
@@ -627,9 +627,6 @@ sandbox_env(action="list_targets")
 ## 限制
 
 - **Backends**: Docker 与 SSH。远程 Windows 走 SSH（Windows 宿主机装 OpenSSH Server）。
-- **Backend 只有 Docker 和 SSH**。没有独立的 local-backend / 进程内
-  pseudo-target —— 但本地 PTY 代码路径由测试覆盖（也是 SSH tunnel
-  回环到本机时走的路径）。
 - **持久 shell 跑在真 PTY 下**。bash 和 PowerShell（over SSH）以及目标
   上的任何交互 shell 都能正常工作。
 - **状态在内存里**。Shell session 服务端重启后丢失，重新 `shell_new`。
@@ -675,7 +672,8 @@ sandbox-mcp                     sandbox-mcp-http
 
 三种 shell 类型 —— 本地 PTY（测试用）、Docker exec（`tty=True`）、SSH
 （`ssh -tt`） —— 都在真 PTY 下跑 shell，共用同一套 `ShellSession` drain
-线程逻辑。Prompt 协议（token + prompt 函数）只装一次；不再用逐命令 marker。
+线程逻辑。Bash 用 Prompt 协议（token + prompt 函数）只装一次；PowerShell
+通过 stdin 逐行命令 + `echo` marker。
 
 ## 设计
 

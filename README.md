@@ -21,10 +21,10 @@ tools, adding persistent environment management that the built-in tools lack.
   machines (Linux + Windows, SSH for Windows).
 - **Persistent PTY shells**: every backend runs the shell under a real PTY,
   so interactive programs (pagers, prompts) work naturally
-- **One-shot random Prompt protocol**: each shell installs a single random
-  prompt token at startup (bash `PS1` / PowerShell `prompt` function). No
-  per-command markers — agent commands stream as-is and the drain thread
-  detects completion via the next prompt
+- **Shell protocol**: Bash installs a random prompt token at startup
+  (`PS1`), the drain thread detects completion via the next prompt.
+  PowerShell uses stdin line-by-line with per-command `echo __START/__END`
+  markers.
 - **Persistent machines**: Docker containers survive MCP restart; discover
   with `docker_ps`
 - **State machine**: shells are `ready` / `waiting` / `terminated`.
@@ -199,7 +199,7 @@ Behaviour:
   the requested name already exists, it reattaches (starting it if stopped)
   rather than erroring on the name conflict. The response carries a `note`
   ("reattached to existing container ...") so the agent knows it was a reuse.
-- `docker_run` no longer overrides the image's CMD. The container runs with
+- `docker_run` does not override the image's CMD. The container runs with
   whatever CMD/ENTRYPOINT the image author chose — `postgres:16` actually
   starts postgres, `redis:7` actually starts redis, etc. To run a generic
   image as an exec-only sandbox, build your own image with `CMD sleep infinity`,
@@ -285,7 +285,7 @@ Each persistent shell is always in one of three states:
 | State | Meaning | What you can do |
 |-------|---------|-----------------|
 | `ready` | Sitting at a prompt, no command running. | Send a new command (`shell_exec`), read buffered output (`shell_read`). |
-| `waiting` | A command is running. The drain thread has not yet seen the next prompt. | `shell_read` for incremental output; send the next command only if you really know the shell is idle (the API rejects it with `error="waiting"`). |
+| `waiting` | A command is running. The drain thread has not yet seen the next prompt. | `shell_read` for incremental output; send the next command only if you really know a command is not already running (the API rejects it with `error="waiting"`). |
 | `terminated` | The underlying shell process exited (`exit`, `kill`, broken pipe, ...). The shell stays in the registry with its last output buffered. | `shell_read` returns the remaining output and `status="terminated"`. To continue working: call `shell_remove` (cleanup) then `shell_new` (fresh shell). The default shell is **never** auto-replaced — the agent must opt in. |
 
 `shell_exec` parameters:

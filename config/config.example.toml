@@ -163,7 +163,7 @@ tmpfile_pattern = ".sandbox-mcp-tmp.XXXXXX"
 #     on timeout returns status="waiting" + a hint recommending
 #     wait=false + shell_read for long tasks.
 #   * Terminated shells stay in the registry; the agent must call
-#     shell_remove then shell_new (auto-replacement was removed).
+#     shell_remove then shell_new (shells are never auto-replaced).
 default_max_output = 50000  # 50 KB — also the truncation threshold
 head_size = 5120          # 5 KB
 tail_size = 46080         # 45 KB

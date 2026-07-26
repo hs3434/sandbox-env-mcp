@@ -1,7 +1,7 @@
 # Sandbox MCP Design Spec (current)
 
-> **Scope**: describes what sandbox-mcp is *now*, not the historical
-> v1 → v2 evolution.  The implementation plan / test plan lives in
+> **Scope**: describes the current sandbox-mcp design.
+> The implementation plan lives in
 > [`implementation-plan.md`](implementation-plan.md); the operator-facing
 > workflow lives in [`README.md`](../README.md).
 
@@ -24,10 +24,7 @@ Two backends, both supported in production:
 | Backend | Auth | Shell transport | Used for |
 |---|---|---|---|
 | **Docker** | docker daemon socket / TCP / SSH transport (config) | `docker exec` with `tty=True` via the Python SDK | Linux + Windows containers, locally or remote daemons |
-| **SSH**    | SSH key (`key = "..."` per target) | `ssh -tt <user>@<host> powershell.exe` / `bash` | Linux or Windows (PowerShell) over SSH; OpenSSH Server must be running on the Windows host |
-
-There is **no WinRM backend**; Windows remote access is SSH-only.
-history retains the commits if needed for archaeology.
+| **SSH**    | SSH key (`key = "..."` per target) | `ssh -tt <user>@<host> bash` (Linux); `ssh -T` with `-Command -` (PowerShell) | Linux (bash PTY) or Windows (PowerShell over SSH); OpenSSH Server must be running on the Windows host |
 
 All shell sessions run under a **real PTY**.  This is what makes
 `pager less`, `vim`, password prompts, and PowerShell's interactive
@@ -170,8 +167,8 @@ the `shell_remove`/`shell_new` guidance.  The agent must explicitly:
 * `shell_remove(shell_id=...)` — drops the registry entry.
 * `shell_new(machine=...)` — opens a fresh shell.
 
-Terminated shells stay in the registry until the agent explicitly removes
-and made it impossible to inspect the post-mortem output.
+Terminated shells persist in the registry so the agent can
+inspect their final output before calling `shell_remove`.
 
 ## 6. Persistent backend state
 
@@ -229,11 +226,6 @@ table in `config.toml`; the agent cannot supply `host` / `user` /
 
 The following are *not* in scope for the current design:
 
-* WinRM backend (not present; SSH is the only Windows transport).
-* Local pseudo-backend (no in-process target that is not backed by a
-  real container or SSH session — the "local PTY" code path is shared
-  with the SSH backend and exercised by tests).
-* PowerShell uses per-command echo markers (no PTY / PSReadLine).
 * In-place migration of `admin` containers between peer and god-mode
   layouts (explicit `docker_remove` + recreate is required).
 * Resource limits (CPU / memory) per machine.
