@@ -15,8 +15,7 @@ PowerShell-over-SSH）作为执行目标，支持基于 shell 的命令执行和
 - **简洁的 MCP 接口**：12 个顶层工具 + 渐进式发现 `sandbox_env`（文件型
   audit 时还会出现 `audit_query`）
 - **双传输**：stdio 或 HTTP（streamable-http）
-- **多 backend**：Docker 容器（SDK）+ SSH 远程机器（Linux / Windows）
-  —— **不再支持 WinRM**，Windows 一律走 SSH
+- **多 backend**：Docker 容器（SDK）+ SSH 远程机器（Linux / Windows，SSH 直连）
 - **持久 PTY shell**：三种 backend（本地、Docker、SSH）都在真 PTY 下
   跑 shell，pager / 提示符等交互行为自然工作
 - **一次性随机 Prompt 协议**：shell 启动时只安装一次随机 prompt token
@@ -587,7 +586,7 @@ Pass it as: Authorization: Bearer <token>
 
 ## Windows 支持
 
-sandbox-mcp **仅**通过 SSH 支持 Windows（**项目里没有 WinRM backend**）。
+sandbox-mcp 通过 SSH 支持 Windows。
 两种方式得到 Windows 目标：
 
 ### 1. SSH 连接远程 Windows
@@ -631,7 +630,7 @@ sandbox_env(action="list_targets")
 
 ## 限制
 
-- **没有 WinRM**。远程 Windows 一律走 SSH（Windows 宿主机装 OpenSSH Server）。
+- **Backends**: Docker 与 SSH。远程 Windows 走 SSH（Windows 宿主机装 OpenSSH Server）。
 - **Backend 只有 Docker 和 SSH**。没有独立的 local-backend / 进程内
   pseudo-target —— 但本地 PTY 代码路径由测试覆盖（也是 SSH tunnel
   回环到本机时走的路径）。

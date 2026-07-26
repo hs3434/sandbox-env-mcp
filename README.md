@@ -18,7 +18,7 @@ tools, adding persistent environment management that the built-in tools lack.
   discovery via `sandbox_env` (and `audit_query` when file-backed)
 - **Dual transport**: stdio (Hermes child process) or HTTP (independent service)
 - **Multi-backend**: Docker containers (SDK, remote daemons) + SSH remote
-  machines (Linux + Windows). **No WinRM** — Windows support is SSH-only.
+  machines (Linux + Windows, SSH for Windows).
 - **Persistent PTY shells**: every backend runs the shell under a real PTY,
   so interactive programs (pagers, prompts) work naturally
 - **One-shot random Prompt protocol**: each shell installs a single random
@@ -638,8 +638,7 @@ regenerate it on restart without the file present.
 
 ## Windows Support
 
-sandbox-mcp supports Windows exclusively over SSH (no WinRM backend
-exists in the project). Two ways to get a Windows target:
+sandbox-mcp supports Windows over SSH. Two ways to get a Windows target:
 
 ### 1. SSH to remote Windows
 
@@ -688,11 +687,7 @@ sandbox_env(action="list_targets")
 
 ## Limitations
 
-- **No WinRM.** Remote Windows is SSH-only (OpenSSH Server on the
-  Windows host).
-- **Backends**: Docker and SSH only. No local-backend or in-process
-  pseudo-target — but the local PTY code path is exercised by tests and
-  by SSH tunnels that loop back to the same machine.
+- **Backends**: Docker and SSH only.
 - **Persistent shells use a PTY.** Works correctly for both bash and
   PowerShell (over SSH), as well as any interactive shell on the target.
 - **State is in-memory.** Shell sessions are lost on server restart;

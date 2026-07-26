@@ -26,8 +26,7 @@ Two backends, both supported in production:
 | **Docker** | docker daemon socket / TCP / SSH transport (config) | `docker exec` with `tty=True` via the Python SDK | Linux + Windows containers, locally or remote daemons |
 | **SSH**    | SSH key (`key = "..."` per target) | `ssh -tt <user>@<host> powershell.exe` / `bash` | Linux or Windows (PowerShell) over SSH; OpenSSH Server must be running on the Windows host |
 
-There is **no WinRM backend** in the project; Windows remote access is
-SSH-only. The previous WinRM implementation was removed entirely; git
+There is **no WinRM backend**; Windows remote access is SSH-only.
 history retains the commits if needed for archaeology.
 
 All shell sessions run under a **real PTY**.  This is what makes
@@ -171,7 +170,7 @@ the `shell_remove`/`shell_new` guidance.  The agent must explicitly:
 * `shell_remove(shell_id=...)` — drops the registry entry.
 * `shell_new(machine=...)` — opens a fresh shell.
 
-Auto-replacement was removed because it silently hid shell crashes
+Terminated shells stay in the registry until the agent explicitly removes
 and made it impossible to inspect the post-mortem output.
 
 ## 6. Persistent backend state
@@ -230,12 +229,11 @@ table in `config.toml`; the agent cannot supply `host` / `user` /
 
 The following are *not* in scope for the current design:
 
-* WinRM backend (removed; SSH is the only Windows transport).
+* WinRM backend (not present; SSH is the only Windows transport).
 * Local pseudo-backend (no in-process target that is not backed by a
   real container or SSH session — the "local PTY" code path is shared
   with the SSH backend and exercised by tests).
-* Per-command marker protocol (replaced by the one-shot random Prompt).
-* PS2 / continuation-prompt detection (see § 4).
+* PowerShell uses per-command echo markers (no PTY / PSReadLine).
 * In-place migration of `admin` containers between peer and god-mode
   layouts (explicit `docker_remove` + recreate is required).
 * Resource limits (CPU / memory) per machine.
