@@ -115,7 +115,6 @@ class DockerConfig:
     restart_policy_name: str = "on-failure"
     restart_max_retry_count: int = 3
     write_tmp_prefix: str = "/tmp/.sandbox-mcp-write-"
-    os_type: str = ""  # Empty = auto-detect, "linux" or "windows"
     # User-defined bridge network for DNS-resolvable container-to-container
     # communication.  Created lazily on first docker_run.  Empty = no network.
     auto_network: str = "sandbox-mcp"
@@ -153,7 +152,6 @@ class DockerConfig:
 class SSHConfig:
     connect_timeout: int = 10
     socket_dir_prefix: str = "sandbox-mcp-ssh-"
-    tmpfile_pattern: str = ".sandbox-mcp-tmp.XXXXXX"
     # Pre-defined SSH targets the agent can discover and connect to.
     # The ``[default_machine] name`` is looked up in this table when
     # the backend is "ssh".
@@ -259,7 +257,6 @@ def _apply_env_overrides(cfg: AppConfig) -> AppConfig:
         "docker_cert_path": ("docker", "cert_path", str),
         "ssh_connect_timeout": ("ssh", "connect_timeout", int),
         "ssh_socket_dir_prefix": ("ssh", "socket_dir_prefix", str),
-        "ssh_tmpfile_pattern": ("ssh", "tmpfile_pattern", str),
         "shell_default_max_output": ("shell", "default_max_output", int),
         "shell_head_size": ("shell", "head_size", int),
         "shell_tail_size": ("shell", "tail_size", int),

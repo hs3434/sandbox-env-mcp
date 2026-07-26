@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Sandbox MCP Server: 7 tools (6 core + 1 sandbox_env entry).
+"""Sandbox MCP Server: 13 tools + 1 optional audit_query.
 
 Tools exposed via MCP tools/list:
   - shell_exec

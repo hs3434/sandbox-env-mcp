@@ -155,7 +155,10 @@ class TestPowerShellProvider:
 
     def test_prompt_setup(self, ps):
         setup = ps.prompt_setup_command("abc")
-        assert setup == ""
+        assert "function prompt" in setup
+        assert "abc" in setup
+        assert "LASTEXITCODE" in setup
+        assert "SETUP_OK" in setup
 
     def test_atomic_write_script(self, ps):
         script = ps.atomic_write_script("C:\\workspace\\app.py")

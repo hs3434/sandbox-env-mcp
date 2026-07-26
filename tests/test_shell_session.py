@@ -7,8 +7,14 @@ from sandbox_mcp.shell_registry import ShellRegistry
 from sandbox_mcp.shell_session import ShellSession, ShellUnhealthy, _health_check
 
 
-def test_fresh_local_shell_uses_pty_and_is_ready():
+def _ready_bash():
     session = ShellSession(["bash"])
+    session.wait_until_ready()
+    return session
+
+
+def test_fresh_local_shell_uses_pty_and_is_ready():
+    session = _ready_bash()
     try:
         assert session.state == "ready"
         assert os.isatty(session._process.stdin.fileno())
@@ -17,7 +23,7 @@ def test_fresh_local_shell_uses_pty_and_is_ready():
 
 
 def test_wait_true_returns_ready_output_and_exit_code():
-    session = ShellSession(["bash"])
+    session = _ready_bash()
     try:
         result = session.send("printf hello; false", timeout=5)
         assert result["status"] == "ready"
@@ -28,7 +34,7 @@ def test_wait_true_returns_ready_output_and_exit_code():
 
 
 def test_state_is_preserved_between_commands():
-    session = ShellSession(["bash"])
+    session = _ready_bash()
     try:
         assert session.send("export FOO=bar", timeout=5)["status"] == "ready"
         assert "bar" in session.send('printf %s "$FOO"', timeout=5)["output"]
@@ -37,7 +43,7 @@ def test_state_is_preserved_between_commands():
 
 
 def test_wait_false_returns_waiting_immediately():
-    session = ShellSession(["bash"])
+    session = _ready_bash()
     try:
         started = time.monotonic()
         result = session.send("sleep 1; printf done", wait=False)
@@ -49,7 +55,7 @@ def test_wait_false_returns_waiting_immediately():
 
 
 def test_wait_timeout_keeps_waiting_and_gives_async_hint():
-    session = ShellSession(["bash"])
+    session = _ready_bash()
     try:
         result = session.send("sleep 2", timeout=0.1)
         assert result["status"] == "waiting"
@@ -61,7 +67,7 @@ def test_wait_timeout_keeps_waiting_and_gives_async_hint():
 
 
 def test_waiting_shell_rejects_independent_exec_but_accepts_ctrl_c():
-    session = ShellSession(["bash"])
+    session = _ready_bash()
     try:
         session.send("sleep 20", wait=False)
         rejected = session.send("printf nope")
@@ -77,7 +83,7 @@ def test_waiting_shell_rejects_independent_exec_but_accepts_ctrl_c():
 
 
 def test_shell_read_detects_prompt_and_returns_ready():
-    session = ShellSession(["bash"])
+    session = _ready_bash()
     try:
         session.send("sleep 0.1; printf done", wait=False)
         deadline = time.monotonic() + 3
@@ -95,7 +101,7 @@ def test_shell_read_detects_prompt_and_returns_ready():
 
 
 def test_only_public_session_states_are_used():
-    session = ShellSession(["bash"])
+    session = _ready_bash()
     try:
         assert session.state in {"ready", "waiting", "terminated"}
         session.send("sleep 1", wait=False)
@@ -116,7 +122,7 @@ def test_terminated_send_has_remove_new_guidance():
 
 
 def test_output_truncation():
-    session = ShellSession(["bash"])
+    session = _ready_bash()
     try:
         result = session.send("printf 'hello world'", timeout=5, max_output=1)
         assert result["status"] == "ready"
@@ -126,8 +132,9 @@ def test_output_truncation():
 
 
 def test_exit_terminates_shell_and_captures_code():
-    session = ShellSession(["bash"])
+    session = _ready_bash()
     session.send("exit 42", timeout=2)
+
     session._drain_thread.join(timeout=2)
     assert session.state == "terminated"
     assert session.exit_reason == "exit"
@@ -135,7 +142,7 @@ def test_exit_terminates_shell_and_captures_code():
 
 
 def test_health_check_passes_for_fresh_session():
-    session = ShellSession(["bash"])
+    session = _ready_bash()
     try:
         _health_check(session)
     finally:

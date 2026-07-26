@@ -21,6 +21,7 @@ class ShellUnhealthy(Exception):
 
 
 def _health_check(session) -> None:
+    session.wait_until_ready()
     result = session.send("true", wait=True, timeout=10)
     if session.state == "terminated":
         raise ShellUnhealthy("shell died during health check")
@@ -39,7 +40,10 @@ class ShellSession:
         self._external = process is not None
         self._provider = provider or BashShellProvider()
         self._lock = threading.Lock()
-        self._state = "ready"
+        self._state = "init"
+        self._init_after_setup = False
+        self._init_timeout = 10.0
+        self._init_timer = None
         self._last_command = None
         self._started_at = time.time()
         self._head = bytearray()
@@ -79,18 +83,25 @@ class ShellSession:
             try:
                 self._process.stdin.write((setup + "\n").encode(self._provider.input_encoding))
                 self._process.stdin.flush()
-                deadline = time.monotonic() + 10
-                while time.monotonic() < deadline:
-                    raw = bytes(self._head) + bytes(self._tail)
-                    if b"SETUP_OK" in raw:
-                        self._clear_buffer()
-                        self._state = "ready"
-                        break
-                    time.sleep(0.05)
             except (BrokenPipeError, OSError):
                 self._state = "terminated"
+            else:
+                self._init_timer = threading.Thread(target=self._init_timeout_kill, daemon=True)
+                self._init_timer.start()
         else:
             self._state = "ready"
+
+    def _init_timeout_kill(self):
+        time.sleep(self._init_timeout)
+        if self._state == "init":
+            self.exit_reason = "init_timeout"
+            self._state = "terminated"
+            self._prompt_event.set()
+            proc = self._process
+            if proc is not None:
+                with contextlib.suppress(Exception):
+                    proc.kill()
+        self._init_timer = None
 
     _ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][0-9;]*[^\a]*\a")
 
@@ -112,14 +123,36 @@ class ShellSession:
                 break
             combined = carry + data
             stripped = self._strip_ansi(combined)
-            last = 0
-            for match in self._prompt_re.finditer(stripped):
-                self._store_output(stripped[last : match.start()])
-                self._pending_exit_code = int(match.group(1))
+
+            if self._state == "init":
+                if b"SETUP_OK" in stripped:
+                    idx = stripped.find(b"SETUP_OK")
+                    after = stripped[idx + len(b"SETUP_OK") :]
+                    self._clear_buffer()
+                    carry = after.lstrip(b"\r\n")
+                    self._init_after_setup = True
+                if self._init_after_setup:
+                    for match in self._prompt_re.finditer(stripped):
+                        self._clear_buffer()
+                        self._state = "ready"
+                        carry = stripped[match.end() :]
+                        self._init_after_setup = False
+                        break
+                    continue
+                carry = b""
+                continue
+
+            content = stripped.rstrip(b"\n") or stripped
+            nl = content.rfind(b"\n")
+            last_line_start = nl + 1 if nl >= 0 else 0
+            last_line = content[last_line_start:]
+            prompt_match = self._prompt_re.search(last_line)
+            if prompt_match:
+                store_end = last_line_start + prompt_match.start()
+                self._store_output(content[:store_end])
+                self._pending_exit_code = int(prompt_match.group(1))
                 self._prompt_event.set()
-                last = match.end()
-            if last:
-                carry = stripped[last:]
+                carry = b""
             elif self._pending_marker is not None:
                 marker_text = f"__END_{self._pending_marker}__:"
                 marker_bytes = marker_text.encode()
@@ -189,12 +222,13 @@ class ShellSession:
             max_output = self.DEFAULT_MAX_OUTPUT
         with self._lock:
             if self._state == "terminated":
+                reason = f" (reason: {self.exit_reason})" if self.exit_reason != "unknown" else ""
                 return self._with_pid(
                     {
                         "output": "",
                         "exit_code": None,
                         "status": "error",
-                        "error": "Shell terminated. shell_remove + shell_new.",
+                        "error": f"Shell terminated.{reason} shell_remove + shell_new.",
                     }
                 )
             if self._state == "init":
@@ -223,6 +257,8 @@ class ShellSession:
             try:
                 if self._use_prompt:
                     cmd_bytes = (command + "\n").encode(self._provider.input_encoding)
+                    if self._provider.default_shell == "powershell.exe" and "\n" in command:
+                        cmd_bytes += b"\n"
                 else:
                     marker = uuid.uuid4().hex
                     self._pending_marker = marker
@@ -239,16 +275,20 @@ class ShellSession:
             return self._with_pid({"status": "waiting"})
         if self._prompt_event.wait(timeout=timeout):
             if self._state == "terminated":
+                output = self._get_buffered_output(max_output)
+                self._clear_buffer()
                 return self._with_pid(
                     {
-                        "output": self._get_buffered_output(max_output),
+                        "output": output,
                         "status": "terminated",
                     }
                 )
             self._state = "ready"
+            output = self._get_buffered_output(max_output, command)
+            self._clear_buffer()
             return self._with_pid(
                 {
-                    "output": self._get_buffered_output(max_output, command),
+                    "output": output,
                     "exit_code": self._pending_exit_code,
                     "status": "ready",
                 }
@@ -348,3 +388,8 @@ class ShellSession:
     @property
     def uptime(self):
         return time.time() - self._started_at
+
+    def wait_until_ready(self, timeout: float = 10.0) -> None:
+        deadline = time.monotonic() + timeout
+        while self._state == "init" and time.monotonic() < deadline:
+            time.sleep(0.01)

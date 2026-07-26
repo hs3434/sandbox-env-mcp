@@ -24,7 +24,7 @@ Two backends, both supported in production:
 | Backend | Auth | Shell transport | Used for |
 |---|---|---|---|
 | **Docker** | docker daemon socket / TCP / SSH transport (config) | `docker exec` with `tty=True` via the Python SDK | Linux + Windows containers, locally or remote daemons |
-| **SSH**    | SSH key (`key = "..."` per target) | `ssh -tt <user>@<host> bash` (Linux); `ssh -T` with `-Command -` (PowerShell) | Linux (bash PTY) or Windows (PowerShell over SSH); OpenSSH Server must be running on the Windows host |
+| **SSH**    | SSH key (`key = "..."` per target) | `ssh -tt <user>@<host> bash` (Linux); `ssh` with `-File -` (PowerShell, pipe mode) | Linux (bash PTY) or Windows (PowerShell over SSH); OpenSSH Server must be running on the Windows host |
 
 All shell sessions run under a **real PTY**.  This is what makes
 `pager less`, `vim`, password prompts, and PowerShell's interactive
@@ -33,7 +33,7 @@ drain thread reads the same stream.
 
 ## 3. MCP surface
 
-`tools/list` advertises 12 tools (13 when audit log is file-backed):
+`tools/list` advertises 13 tools (14 when audit log is file-backed):
 
 | Tool | Purpose |
 |---|---|
@@ -41,44 +41,42 @@ drain thread reads the same stream.
 | `shell_read` | Read buffered output from a shell (non-blocking). |
 | `shell_new` | Open an extra shell on a machine (the default shell is auto-created on first `shell_exec` if missing). |
 | `shell_remove` | Terminate and remove a shell (any state). |
+| `write_stdin` | Write raw bytes to a shell's stdin — Ctrl-C (`\x03`) on Linux, or feed input to interactive programs. On Windows/PowerShell, Ctrl-C is unsupported (pipe mode). |
 | `shell_list` | List all shells with state, machine, is_default, last_command. |
-| `sandbox_machine_list` | List all machines with backend, status, shell count, uptime. |
-| `sandbox_default_set` | Set default machine *or* default shell (exactly one of `machine` / `shell_id`). |
+| `machine_list` | List all machines with backend, status, shell count, uptime. |
+| `default_set` | Set default machine *or* default shell (exactly one of `machine` / `shell_id`). |
 | `file_read` | Read a text file with line numbers and pagination. |
 | `file_write` | Write a file (atomic, in-process lint for known extensions). |
-| `file_patch` | Targeted find-and-replace (replace mode) or unified-diff (patch mode), fuzzy-matched. |
+| `file_patch` | `mode=replace` find-and-replace or `mode=patch` unified-diff, fuzzy-matched. |
 | `file_search` | ripgrep content search + glob file search. |
-| `sandbox_env` | Progressive discovery: `help`, `status`, `list_targets`, `machine_list`, `default_set`, `shell_*`, `docker_*`, `connect`, `close`. |
-| `sandbox_audit_query` | Read the audit log (filtered, paginated). Only present when `[audit] log_path` is set. |
+| `env` | Progressive discovery: `help`, `status`, `list_targets`, `machine_list`, `default_set`, `shell_*`, `docker_*`, `connect`, `close`. |
+| `audit_query` | Read the audit log (filtered, paginated). Only present when `[audit] log_path` is set. |
 
-`tools/list` always advertises the 6 core tools (`shell_*`, `file_*`)
+`tools/list` always advertises the full set of base tools
 plus `env` so the agent can discover management actions on demand;
 the agent opts in to backend-specific actions via `action=help` /
 `action=list_targets`.
 
 ### `tools/list` size budget
 
-The 12-tool schema is the production contract.  Adding a new tool
+The 13-tool schema is the production contract.  Adding a new tool
 requires deleting or demoting one.  Backend-specific discovery is
-deliberately *not* in `tools/list` — `sandbox_env` is the single
+deliberately *not* in `tools/list` — `env` is the single
 meta-tool whose description stays short.
 
 ## 4. Shell protocol — one-shot random Prompt
 
-Each shell installs a single random prompt token **at startup**; we no
-longer wrap every command in start/end markers.
+Each shell installs a single random prompt token **at startup**:
 
-* **Bash** — `unset PROMPT_COMMAND; export PS1='<token>:$?>'`.  Setting
-  `PROMPT_COMMAND` empty stops bash from re-emitting its own prompt
-  prefix; PS1 is the only prompt line.
-* **PowerShell** — `prompt` function that prints
-  `'<token>:' + $LASTEXITCODE + '>'`.  Also runs `setup_command`
-  once (UTF-8 console encoding, `chcp 65001`, `PYTHONUTF8=1`,
-  disables PSReadLine's continuation prompt).
-* **The drain thread** scans for `<token>:N>` and uses the leading
-  digits as the captured exit code.  When the agent writes
-  `command + '\n'`, the next prompt line is the gate from
-  `waiting` → `ready`.
+* **Bash** — `PROMPT_COMMAND='__rc=$?' PS1='<token>:${__rc}|'; echo SETUP_OK`.  The drain
+  thread detects `SETUP_OK`, then waits for the first prompt.
+* **PowerShell** — `function prompt { $rc=$global:LASTEXITCODE; if ($null -eq
+  $rc) { $rc=0 }; "` + "\n" + `<token>:$rc|" }; Write-Output SETUP_OK`.  Runs
+  in `-File -` mode (pipe stdin, no PTY) so prompt output reaches stdout
+  directly.  The `\n` prefix separates the prompt from command output.
+* **The drain thread** scans for `<token>:N|` on the last line and uses the
+  captured exit code.  When the agent writes `command + '\n'`, the next
+  prompt line is the gate from `waiting` → `ready`.
 
 We deliberately do **not** detect PS2 (the secondary /
 continuation prompt).  Reasons:
@@ -98,35 +96,43 @@ as part of the *next* command's output — same as a human's terminal.
 
 ## 5. Shell state machine
 
-Three states.  The per-shell lock is held internally for the duration
+Four states.  The per-shell lock is held internally for the duration
 of a single `send(wait=True)` call, but that is never exposed to the
-agent — the only `state` values the agent ever sees are these three:
+agent — the only `state` values the agent ever sees are these four:
 
 ```
-                   +-------+
-                   | ready |  <-- drain thread saw prompt line
-                   +-------+
-                      |
-        agent.send() |  (lock acquired)
-                      v
-                   +---------+
-                   | waiting |  <-- command bytes written, prompt not yet seen
-                   +---------+
-                      |
-            drain sees| prompt token,
-            _prompt_  | captures exit code
-            event.set  v
-                   +-------+  (back to ready, exit code returned)
+              +------+
+              | init |  <-- constructor returns; setup command sent
+              +------+
+                 |
+    drain thread| sees SETUP_OK + first prompt
+    transitions | to ready
+                 v
+              +-------+
+              | ready |  <-- drain thread saw prompt line
+              +-------+
+                 |
+   agent.send() |  (lock acquired)
+                 v
+              +---------+
+              | waiting |  <-- command bytes written, prompt not yet seen
+              +---------+
+                 |
+       drain sees| prompt token,
+       _prompt_  | captures exit code
+       event.set  v
+              +-------+  (back to ready, exit code returned)
 
-  (any state) --> +-----------+
-                  |terminated |  <-- shell process exited / broken pipe
-                  +-----------+
-                  state kept; last output preserved;
-                  agent must shell_remove + shell_new.
+ (any state) --> +-----------+
+                |terminated |  <-- shell process exited / broken pipe
+                +-----------+
+                state kept; last output preserved;
+                agent must shell_remove + shell_new.
 ```
 
 | State | `send(wait=True)` returns | `send(wait=False)` returns | `read()` returns | `remove()` |
 |-------|---------------------------|----------------------------|------------------|-----------|
+| `init`       | `error` with `"Shell initializing. Retry in a moment."` | same error | `status="init"` | kills shell, removes registry entry |
 | `ready`      | prompt is set; `output` + `exit_code` + `status="ready"` | prompt not seen yet → `status="waiting"`. Caller follows up with `shell_read`. | last buffered output, `status="ready"` if prompt has been seen since last `send` | kills shell, removes registry entry |
 | `waiting`    | `error` with guidance (`"waiting for previous command"`) | same error | buffered output, `status="waiting"` | kills shell, removes registry entry |
 | `terminated` | `error` with guidance (`"use shell_remove then shell_new"`) | same error | buffered output + `status="terminated"` | removes registry entry (no-op on already-dead shell) |
@@ -203,7 +209,7 @@ If the default machine exits, `machine_list` still shows it; the agent
 must `docker_remove` + `docker_run` (or `close` + `connect` for SSH)
 to get a working default.
 
-## 8. sandbox_env actions (current)
+## 8. env actions (current)
 
 ```
 Default discovery:  help / status / list_targets

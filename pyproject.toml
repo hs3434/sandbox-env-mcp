@@ -51,9 +51,6 @@ sandbox-env-mcp-http = "sandbox_mcp.server:main_http"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools.package-data]
-"sandbox_mcp" = ["data/*"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra -m 'not integration'"

@@ -65,7 +65,7 @@ PTY-backed persistent shell.  Public surface:
   signal the drain thread.
 * Properties: `state`, `bash_pid`, `last_command`, `uptime`.
 
-State (`ready` / `waiting` / `terminated`) is set under the
+State (`init` / `ready` / `waiting` / `terminated`) is set under the
 instance's `_lock`.  The drain thread:
 
 * Reads stdout bytes (PTY master for local / SSH;
@@ -85,9 +85,10 @@ bytes) with a `[Output truncated: showing last N of M chars]`
 notice.
 
 The shell provider's `prompt_setup_command(token)` runs once during
-`_start()`.  Setup is awaited via `_prompt_event.wait(timeout=3)`;
-on success the buffer is cleared and state is set to `ready`.  On
-`BrokenPipeError` / `OSError`, state is `terminated` immediately.
+`_start()`.  The drain thread detects `SETUP_OK` followed by the first
+prompt token, then sets state to `ready`.  If init does not complete
+within 10 seconds, `_init_timeout_kill` sets state to `terminated`.
+On `BrokenPipeError` / `OSError`, state is `terminated` immediately.
 
 ### `shell_registry.py`
 
@@ -170,17 +171,16 @@ on success the buffer is cleared and state is set to `ready`.  On
   `tempfile.mkdtemp(prefix=<socket_dir_prefix><name>-)`.
 * `create()` — `ssh -M -S <socket> ... true` to establish the
   master.
-* `open_shell(name)` — `ssh -tt <args> <provider.default_shell_args>`.
-  The `-tt` forces PTY allocation.
+* `open_shell(name)` — for Linux: `ssh -tt <args> <provider.default_shell_args>` (strips `-NonInteractive`).  For PowerShell: `ssh <args> -NoExit -File -` (pipe mode, no PTY).
 * `exec_oneoff` — same shape without `-tt` (one-off commands).
 * `write_file` — pipes content over SSH stdin to the provider's
   atomic write script (tmp + `mv -f`).
-* `_decode_powershell_output` — best-effort fixup for
-  UTF-16LE/GBK byte corruption on remote Windows.
+* `_decode_bytes` — decodes stdout/stderr with the target's configured
+  codec, falling back to `replace` on errors.
 
 ### `server.py`
 
-* `TOOL_DEFINITIONS` — the 12-tool schema (plus the optional
+* `TOOL_DEFINITIONS` — the 13-tool schema (plus the optional
   `audit_query` when `[audit] log_path` is set).
 * `SandboxServer.__init__`:
   1. Build registries + backends + `SandboxEnv` dispatcher.

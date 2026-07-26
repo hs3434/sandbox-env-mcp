@@ -29,7 +29,7 @@ files, etc. The behaviour diverges on the response:
   letting the agent decide is more honest.
 
 Both designs are honest about being **defense-in-depth, not a security
-boundary**: the agent can still call ``sandbox_shell_exec`` with
+boundary**: the agent can still call ``shell_exec`` with
 ``cat /etc/shadow`` and read it. The advisory exists to give the model
 a clear signal that "this path looks risky" so it can stop or proceed
 explicitly, and so the audit log records the attempt.
@@ -199,17 +199,3 @@ def check_path_safety(path: str) -> dict:
         }
 
     return {"warning": None, "category": None}
-
-
-def is_read_denied(path: str) -> bool:
-    """True if a read at ``path`` should trigger the advisory."""
-    return check_path_safety(path)["warning"] is not None
-
-
-def is_write_denied(path: str) -> bool:
-    """True if a write at ``path`` should trigger the advisory.
-
-    Same predicate as :func:`is_read_denied` — a path that warrants an
-    advisory for reading also warrants one for writing.
-    """
-    return is_read_denied(path)

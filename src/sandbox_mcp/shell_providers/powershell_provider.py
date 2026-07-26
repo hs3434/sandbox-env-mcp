@@ -7,17 +7,13 @@ class PowerShellProvider(ShellProvider):
     """Generates PowerShell commands for Windows containers and remote
     Windows machines over SSH.
 
-    All commands are designed for ``powershell.exe -NoLogo -NoProfile
-    -NonInteractive`` (interactive stdin) or with ``exec_flag`` ``-Command``
-    for one-off execution.  Paths are single-quoted to avoid
-    variable-expansion issues.
+    Uses ``-File -`` mode (stdin-as-script) for interactive shells so
+    that the prompt function emits to stdout through regular pipes
+    without PTY interference.  One-off execution uses ``-Command``.
 
     *input_encoding* / *output_encoding* are the codecs the remote
     console actually uses — they default to ``gbk`` (Chinese Windows)
-    but should be set from the encoding probe.  No ``chcp`` or
-    ``[Console]::OutputEncoding`` overrides are issued, because those
-    are honoured only after the host has finished reading the argv and
-    break the prompt-function installation on localized Windows.
+    but should be set from the encoding probe.
     """
 
     def __init__(
@@ -34,7 +30,7 @@ class PowerShellProvider(ShellProvider):
 
     @property
     def default_shell_args(self) -> list[str]:
-        return ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive"]
+        return ["powershell.exe", "-NoLogo", "-NoProfile"]
 
     @property
     def exec_flag(self) -> str:
@@ -47,10 +43,6 @@ class PowerShellProvider(ShellProvider):
     @property
     def output_encoding(self) -> str:
         return self._output_encoding
-
-    @property
-    def setup_command(self) -> str:
-        return ""
 
     @staticmethod
     def _esc(path: str) -> str:
@@ -139,8 +131,13 @@ class PowerShellProvider(ShellProvider):
         return " ".join(parts)
 
     def prompt_setup_command(self, token: str) -> str:
-        return ""
+        return (
+            f"function prompt {{ $rc=$global:LASTEXITCODE; "
+            f"if ($null -eq $rc) {{ $rc=0 }}; "
+            f'"`n{token}:$rc|" }}; '
+            "Write-Output SETUP_OK"
+        )
 
     @property
     def uses_prompt(self) -> bool:
-        return False
+        return True

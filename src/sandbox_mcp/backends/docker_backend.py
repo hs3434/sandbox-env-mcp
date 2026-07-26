@@ -32,7 +32,6 @@ import contextlib
 import os
 import shlex
 import threading
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -80,7 +79,7 @@ def _container_to_host(container_path: str, machine: str) -> Path:
 
     The agent only knows container paths.  sandbox-mcp mounts the host's
     ``work_home/<machine>/`` into the container at ``/workspace``, so any
-    file the agent wrote via :func:`sandbox_file_write` lives at the
+    file the agent wrote via :func:`file_write` lives at the
     translated host path on the operator's filesystem.
 
     Anything outside ``/workspace/`` is rejected — two reasons: (a) host
@@ -395,8 +394,6 @@ class DockerBackend(Backend):
 
     def __init__(self):
         self._client = None  # lazy init
-        self._started_at: dict[str, float] = {}
-        self._shell: dict[str, str] = {}
         self._provider: dict[str, ShellProvider] = {}
 
     def _ensure_client(self):
@@ -597,15 +594,10 @@ class DockerBackend(Backend):
                 error=str(e.explanation or e),
             )
 
-        self._started_at[name] = time.time()
         os_type = kwargs.get("os_type", "")
         if not os_type:
             os_type = self._detect_container_os(name)
         self._provider[name] = ShellProviderFactory.create(os_type)
-        self._shell[name] = kwargs.get(
-            "shell",
-            "powershell.exe" if os_type == "windows" else "bash",
-        )
         # ``created`` is filled in lazily by ``get_info`` (it queries the
         # daemon for accurate timestamps).  Mark the machine as running
         # so the dispatcher can surface it in ``docker_ps`` immediately.
@@ -675,7 +667,6 @@ class DockerBackend(Backend):
                 f"; passed purpose {purpose!r} ignored (existing has "
                 f"{existing_purpose!r}); remove+recreate to change purpose"
             )
-        self._shell[name] = shell
         return self._running_info(container, name, purpose=existing_purpose, image=image, note=note)
 
     def _running_info(
@@ -719,7 +710,6 @@ class DockerBackend(Backend):
         state = (container.attrs or {}).get("State", {}) or {}
         status = state.get("Status", "unknown")
         if status == "running":
-            self._started_at[name] = time.time()
             return TargetInfo(
                 name=name,
                 backend="docker",
@@ -780,7 +770,6 @@ class DockerBackend(Backend):
         try:
             container = self._ensure_client().containers.get(name)
             container.remove(force=True)
-            self._started_at.pop(name, None)
             return {"machine": name, "status": "removed"}
         except (docker.errors.APIError, docker.errors.NotFound) as e:
             return {"machine": name, "status": "error", "error": str(e)}
@@ -844,7 +833,7 @@ class DockerBackend(Backend):
         Container curated view deliberately omits ``Config.Env``,
         ``Config.WorkingDir``, ``Config.User``, and
         ``NetworkSettings.IPAddress`` — agents get those from
-        :func:`sandbox_shell_exec` (``env`` / ``pwd`` / ``whoami`` /
+        :func:`shell_exec` (``env`` / ``pwd`` / ``whoami`` /
         ``hostname -i``).  The curated set focuses on what ``shell_exec``
         cannot answer: state, cmd, mounts, labels, restart policy.
 
@@ -1103,7 +1092,7 @@ class DockerBackend(Backend):
     ) -> dict:
         """Build a Docker image from a Dockerfile the agent has already
         written into a sandboxed container's ``/workspace/`` (via
-        :func:`sandbox_file_write`).  The bind mount surfaces those files
+        :func:`file_write`).  The bind mount surfaces those files
         on the host at ``work_home/<machine>/``; this method translates
         the container paths back to host paths and runs ``docker build``.
 
@@ -1136,7 +1125,7 @@ class DockerBackend(Backend):
         Dockerfile (``RUN --mount=type=bind,source=/,...``) executes in
         a daemon-orchestrated container with full host kernel
         capabilities, so inline mode is a host-RCE vector.  Write the
-        Dockerfile via :func:`sandbox_file_write` first, then build.
+        Dockerfile via :func:`file_write` first, then build.
 
         Error response shape (always includes ``machine`` + ``image_tag``):
 
@@ -1152,7 +1141,7 @@ class DockerBackend(Backend):
             container by mistake.
           - ``error_kind="dockerfile_missing"`` — daemon couldn't open
             the Dockerfile within the build context.  Hint points to
-            verifying the path matches the ``sandbox_file_write`` call.
+            verifying the path matches the ``file_write`` call.
           - ``error_kind="base_image_not_found"`` — the ``FROM <image>``
             can't be resolved (typo, private registry needs
             ``docker login``, etc.).
@@ -1202,7 +1191,7 @@ class DockerBackend(Backend):
                     f"own {_WORKSPACE_BIND}/ — files in machine=A's "
                     f"{_WORKSPACE_BIND}/ are NOT visible from "
                     f"machine=B. Verify with "
-                    f"sandbox_file_read(machine={machine!r}, "
+                    f"file_read(machine={machine!r}, "
                     f"path={dockerfile!r}). "
                     f"NOTE: when sandbox-mcp runs inside a container, "
                     f"work_home MUST be bind-mounted into the mcp "
@@ -1230,7 +1219,7 @@ class DockerBackend(Backend):
                 kind = "dockerfile_missing"
                 hint = (
                     f" Verify {dockerfile!r} was written via "
-                    f"sandbox_file_write(machine={machine!r}, "
+                    f"file_write(machine={machine!r}, "
                     f"path={dockerfile!r})."
                 )
             else:

@@ -19,8 +19,6 @@ import pytest
 from sandbox_mcp.safety import (
     CATEGORIES,
     check_path_safety,
-    is_read_denied,
-    is_write_denied,
 )
 
 # ---- exact paths ----
@@ -146,20 +144,6 @@ def test_safe_paths_return_no_advisory(path):
     result = check_path_safety(path)
     assert result["warning"] is None
     assert result["category"] is None
-
-
-# ---- is_read_denied / is_write_denied are aliases ----
-
-
-def test_is_read_denied_matches_check_path_safety():
-    assert is_read_denied("/etc/shadow") is True
-    assert is_read_denied("/tmp/safe.txt") is False
-    assert is_read_denied("/root/.aws/credentials") is True
-
-
-def test_is_write_denied_aliases_read():
-    assert is_write_denied("/etc/shadow") == is_read_denied("/etc/shadow")
-    assert is_write_denied("/tmp/x.py") == is_read_denied("/tmp/x.py")
 
 
 # ---- tilde expansion ----

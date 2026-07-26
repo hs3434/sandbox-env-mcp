@@ -28,7 +28,7 @@ class ShellProvider(ABC):
     @abstractmethod
     def default_shell_args(self) -> list[str]:
         """Startup arguments for the shell, e.g. ['bash'] or
-        ['powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive', '-Command']."""
+        ['powershell.exe', '-NoLogo', '-NoProfile']."""
 
     @property
     @abstractmethod
@@ -52,20 +52,6 @@ class ShellProvider(ABC):
         Windows uses ``gbk``, on Japanese Windows ``cp932``, etc.
         """
         return "utf-8"
-
-    @property
-    def setup_command(self) -> str:
-        """Command to run once at shell startup before any user command.
-
-        The default is empty.  PowerShell's setup only installs the
-        prompt function — sandbox-mcp does NOT touch ``chcp`` or
-        ``[Console]::OutputEncoding`` because the host's native
-        encoding is what the shell actually uses (and overriding it
-        from inside the shell breaks script parsing).  The codec used
-        to read stdin / write stdout is decided up front by an
-        encoding probe, then threaded through the provider.
-        """
-        return ""
 
     @property
     def uses_prompt(self) -> bool:

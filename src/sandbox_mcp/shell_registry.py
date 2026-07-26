@@ -104,6 +104,7 @@ class ShellRegistry:
             }
             if session.state == "terminated":
                 item["hint"] = "Process exited. Call shell_remove to clean up."
+                item["exit_reason"] = session.exit_reason
             elif session.state == "waiting":
                 item["bash_pid"] = session.bash_pid
             result.append(item)

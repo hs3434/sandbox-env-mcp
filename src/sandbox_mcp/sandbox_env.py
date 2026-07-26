@@ -61,10 +61,10 @@ HELP_RESPONSE = {
     ],
     "note": (
         "Core tools are exposed directly as top-level tools. "
-        "sandbox_shell_exec runs commands in the target machine's persistent "
+        "shell_exec runs commands in the target machine's persistent "
         "shell — equivalent to ``docker exec -it <container> bash`` on Docker "
         "machines and ``ssh <host>`` on SSH machines. "
-        "sandbox_file_read/write/patch/search operate on the target machine's "
+        "file_read/write/patch/search operate on the target machine's "
         "filesystem through the same remote-execution proxy. "
         "All tools target the default machine unless a [machine] param is "
         "passed. For full action docs call "
@@ -651,6 +651,16 @@ class SandboxEnv:
         # does not need it surfaced.
         if session.state == "waiting":
             result["bash_pid"] = session.bash_pid
+        provider = backend.get_provider(machine)
+        if provider and provider.default_shell == "powershell.exe":
+            result["hint"] = (
+                "write_stdin Ctrl-C (\\x03) does not interrupt "
+                "commands on PowerShell — the session uses pipe "
+                "mode without a terminal driver.  To stop a "
+                "long-running command, kill the shell "
+                "(shell_remove + shell_new) or wait for it "
+                "to complete."
+            )
         return result
 
     def _op_shell_remove(self, params):
@@ -705,7 +715,7 @@ class SandboxEnv:
     def _op_docker_build(self, params):
         """Build a Docker image from a Dockerfile the agent has already
         written into a sandboxed container's ``/workspace/`` via
-        :func:`sandbox_file_write`.
+        :func:`file_write`.
 
         ``dockerfile`` and ``context_dir`` must be CONTAINER paths under
         ``/workspace/``, NOT host paths — ``/workspace/`` is the only

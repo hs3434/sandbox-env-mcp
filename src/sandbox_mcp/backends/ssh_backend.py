@@ -66,7 +66,6 @@ class SSHBackend(Backend):
     def __init__(self):
         self._ssh = _find_ssh()
         self._targets: dict[str, dict] = {}
-        self._shell: dict[str, str] = {}
         self._provider: dict[str, ShellProvider] = {}
 
     def _socket_path(self, name):
@@ -216,9 +215,6 @@ class SSHBackend(Backend):
             else {}
         )
         self._provider[name] = ShellProviderFactory.create(os_type, **provider_kwargs)
-        self._shell[name] = kwargs.get(
-            "shell", "powershell.exe" if os_type == "windows" else "bash"
-        )
         return TargetInfo(name=name, backend="ssh", status="running", purpose=purpose)
 
     def _resolve_encoding(self, name: str, **kwargs) -> EncodingInfo:
@@ -382,7 +378,7 @@ class SSHBackend(Backend):
                 *self._ssh_base_args(name),
                 *provider.default_shell_args,
                 "-NoExit",
-                "-Command",
+                "-File",
                 "-",
             ]
         else:
