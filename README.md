@@ -167,8 +167,8 @@ ever seeing a host path.
 By default sandbox-mcp is **lazy**: the agent creates its first machine on
 demand with `docker_run` / `connect`, and there is no default machine
 until it does. Set `[default_machine] enabled = true` to instead provision a
-default machine at startup so the agent can call `sandbox_shell_exec` /
-`sandbox_file_*` immediately:
+default machine at startup so the agent can call `shell_exec` /
+`file_*` immediately:
 
 ```toml
 [default_machine]
@@ -264,17 +264,17 @@ different machine or is managed as a systemd service.
 
 | Tool | Purpose |
 |------|---------|
-| `sandbox_shell_exec` | Execute a shell command on the default (or named) shell. `wait=true` blocks; default timeout 10 s. |
+| `shell_exec` | Execute a shell command on the default (or named) shell. `wait=true` blocks; default timeout 10 s. |
 | `sandbox_shell_read` | Read buffered output from a shell (non-blocking). |
 | `sandbox_shell_new` | Open an additional shell session on a machine. |
 | `sandbox_shell_remove` | Terminate and remove a shell (any state). |
 | `sandbox_shell_list` | List all shells (shell_id, machine, state, is_default, ...). |
 | `sandbox_machine_list` | List all registered machines with backend, status, shell count, uptime. |
 | `sandbox_default_set` | Set the default machine or default shell. |
-| `sandbox_file_read` | Read a text file with line numbers. |
-| `sandbox_file_write` | Write a file (auto mkdir, syntax check, atomic). |
-| `sandbox_file_patch` | Targeted edit with fuzzy match. |
-| `sandbox_file_search` | Ripgrep content search + glob file search. |
+| `file_read` | Read a text file with line numbers. |
+| `file_write` | Write a file (auto mkdir, syntax check, atomic). |
+| `file_patch` | Targeted edit with fuzzy match. |
+| `file_search` | Ripgrep content search + glob file search. |
 | `sandbox_env` | Progressive discovery: `default_set`, `shell_*`, `docker_*`, `connect`, `close`, ... |
 | `sandbox_audit_query` | Read the audit log (filtered, paginated) — only when `[audit] log_path` is set. |
 
@@ -372,7 +372,7 @@ The agent never touches the host filesystem. `docker_build` only
 accepts file mode:
 
 ```python
-sandbox_file_write(path="/workspace/Dockerfile",
+file_write(path="/workspace/Dockerfile",
                    content="FROM debian:stable-slim\nRUN apt install -y python3\n")
 sandbox_env(action="docker_build",
             machine="dev",
@@ -393,7 +393,7 @@ file is visible to the agent's `shell_exec`.
 > skip the sandbox's file-write audit trail AND be fed verbatim to the
 > docker daemon, whose build steps execute with full host kernel
 > capabilities (e.g. BuildKit `--mount=type=bind,source=/,...`). The
-> agent has to commit its Dockerfile to disk via `sandbox_file_write`
+> agent has to commit its Dockerfile to disk via `file_write`
 > first, which keeps every line auditable and the build context under
 > `work_home`.
 

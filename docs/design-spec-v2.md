@@ -41,7 +41,7 @@ drain thread reads the same stream.
 
 | Tool | Purpose |
 |---|---|
-| `sandbox_shell_exec` | Send a command to a shell. `wait=true` blocks (default 10 s), `wait=false` returns immediately. |
+| `shell_exec` | Send a command to a shell. `wait=true` blocks (default 10 s), `wait=false` returns immediately. |
 | `sandbox_shell_read` | Read buffered output from a shell (non-blocking). |
 | `sandbox_shell_new` | Open an extra shell on a machine (the default shell is auto-created on first `shell_exec` if missing). |
 | `sandbox_shell_remove` | Terminate and remove a shell (any state). |

@@ -158,7 +158,7 @@ SANDBOX_MCP_AUDIT_LOG_PATH=/var/log/sandbox-mcp/audit.db sandbox-mcp
 默认 sandbox-mcp 是**懒加载**的：agent 用 `docker_run` / `connect`
 按需创建首个 machine，在此之前没有默认 machine。设置
 `[default_machine] enabled = true` 可在启动时直接准备一个默认 machine，
-这样 agent 一上来就能用 `sandbox_shell_exec` / `sandbox_file_*`：
+这样 agent 一上来就能用 `shell_exec` / `file_*`：
 
 ```toml
 [default_machine]
@@ -247,17 +247,17 @@ Hermes 连到 HTTP MCP 端点（`/mcp`，即 MCP 规范当前的 "Streamable HTT
 
 | 工具 | 用途 |
 |---|---|
-| `sandbox_shell_exec` | 在默认（或指定）shell 上跑命令。`wait=true` 阻塞，默认 10 秒超时。 |
+| `shell_exec` | 在默认（或指定）shell 上跑命令。`wait=true` 阻塞，默认 10 秒超时。 |
 | `sandbox_shell_read` | 读 shell 缓冲区的输出（非阻塞）。 |
 | `sandbox_shell_new` | 在某台 machine 上额外开一个 shell。 |
 | `sandbox_shell_remove` | 终止并移除一个 shell（任意状态）。 |
 | `sandbox_shell_list` | 列出所有 shell（shell_id / machine / state / is_default / ...）。 |
 | `sandbox_machine_list` | 列出所有已注册的 machine（backend / status / shell 数 / uptime）。 |
 | `sandbox_default_set` | 设置默认 machine 或默认 shell。 |
-| `sandbox_file_read` | 读文本文件，带行号。 |
-| `sandbox_file_write` | 写文件（自动 mkdir、语法检查、原子写）。 |
-| `sandbox_file_patch` | 模糊匹配的定向编辑。 |
-| `sandbox_file_search` | ripgrep 内容搜索 + glob 文件搜索。 |
+| `file_read` | 读文本文件，带行号。 |
+| `file_write` | 写文件（自动 mkdir、语法检查、原子写）。 |
+| `file_patch` | 模糊匹配的定向编辑。 |
+| `file_search` | ripgrep 内容搜索 + glob 文件搜索。 |
 | `sandbox_env` | 渐进式发现管理动作（`default_set`、`shell_*`、`docker_*`、`connect`、`close`...）。 |
 | `sandbox_audit_query` | 读取审计日志（带过滤 / 分页）—— 仅在 `[audit] log_path` 指向文件时启用。 |
 
@@ -349,7 +349,7 @@ auto_network = ""
 agent 永远不接触宿主文件系统。`docker_build` 只接受文件模式：
 
 ```python
-sandbox_file_write(path="/workspace/Dockerfile",
+file_write(path="/workspace/Dockerfile",
                    content="FROM debian:stable-slim\nRUN apt install -y python3\n")
 sandbox_env(action="docker_build",
             machine="dev",
@@ -368,7 +368,7 @@ sandbox_env(action="docker_build",
 > **为什么没有内联 `dockerfile_content`？** 内联模式会跳过 sandbox
 > 的 file-write 审计链，而且 Dockerfile 直接喂给 docker daemon，build
 > 步骤以宿主内核全能力执行（BuildKit `--mount=type=bind,source=/,...`）。
-> 强制要求 agent 先用 `sandbox_file_write` 把 Dockerfile 落到磁盘，
+> 强制要求 agent 先用 `file_write` 把 Dockerfile 落到磁盘，
 > 保证每行可审计、build context 留在 `work_home` 内。
 
 ### 检查镜像和容器
