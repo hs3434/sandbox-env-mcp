@@ -732,11 +732,10 @@ sandbox-mcp                     sandbox-mcp-http
     tty=True)      ssh -tt, PTY)
 ```
 
-All three shell types — local PTY (used by tests), Docker exec
-(`tty=True`), and SSH (`ssh -tt`) — run the shell under a real PTY and
-share the same `ShellSession` drain-thread logic. The Prompt protocol
-(token + prompt function) is installed once at startup; per-command
-markers are not used.
+All shells — local PTY (unit tests), Docker exec (`tty=True`), and SSH —
+run under a real PTY and share the same `ShellSession` drain-thread
+logic. The Prompt protocol (token + prompt function) is installed once at startup for Bash.
+PowerShell uses per-command `echo` markers over stdin.
 
 ## Design
 

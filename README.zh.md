@@ -16,12 +16,8 @@ PowerShell-over-SSH）作为执行目标，支持基于 shell 的命令执行和
   audit 时还会出现 `audit_query`）
 - **双传输**：stdio 或 HTTP（streamable-http）
 - **多 backend**：Docker 容器（SDK）+ SSH 远程机器（Linux / Windows，SSH 直连）
-- **持久 PTY shell**：三种 backend（本地、Docker、SSH）都在真 PTY 下
-  跑 shell，pager / 提示符等交互行为自然工作
-- **一次性随机 Prompt 协议**：shell 启动时只安装一次随机 prompt token
-  （bash 用 `PS1`，PowerShell 用 `prompt` 函数），**不再每条命令
-  插 marker**；agent 命令按原样写入 stdin，drain 线程靠下一个 prompt
-  判定完成
+- **持久 PTY shell**：所有 shell 都在真 PTY 下运行（单元测试的本地 PTY、Docker exec `tty=True`、SSH `-tt`），共享同一套 `ShellSession` drain 线程逻辑。
+- **Shell 协议**：Bash 启动时安装随机 prompt token（`PS1`），drain 线程靠 prompt 判定命令完成；PowerShell 通过 stdin 逐行命令 + `echo __START/__END` marker 协议。
 - **持久化机器**：Docker 容器在 MCP 重启后依然存在，可用 `docker_ps` 发现
 - **状态机**：shell 只有 `ready` / `waiting` / `terminated` 三态。
   `wait=true`（默认 10 秒超时）超时后返回 `waiting`，并提示长任务改用
