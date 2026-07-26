@@ -1,5 +1,7 @@
 # sandbox-mcp
 
+<!-- mcp-name: io.github.hs3434/sandbox-env-mcp -->
+
 MCP server that gives AI agents a real working environment: persistent
 shells, a filesystem, and multi-machine management — backed by Docker
 containers or remote SSH hosts.
