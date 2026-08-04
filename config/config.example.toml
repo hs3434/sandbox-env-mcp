@@ -139,7 +139,7 @@ socket_dir_prefix = "sandbox-mcp-ssh-"
 # Chinese Windows; pass "utf-8" if you've changed the box's code page.
 [ssh.targets]
 # Example:
-#   win-build = { host = "192.168.1.100", user = "builder", os_type = "windows", shell = "powershell.exe", encoding = "gbk" }
+#   win-build = { host = "192.168.1.100", user = "builder", os_type = "windows", shell = "powershell.exe", encoding = "gbk", key = "/home/sandbox/.sandbox-mcp/windows_rsa" }
 # Example:
 #   dev-box = { host = "10.0.0.5", user = "ubuntu" }
 

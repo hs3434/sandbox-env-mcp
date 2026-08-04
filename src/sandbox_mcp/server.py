@@ -779,16 +779,25 @@ def _make_mcp_server(server: SandboxServer):
     returned server object.
     """
     from mcp.server import Server
+    from mcp.types import (
+        ListToolsRequest,
+        ListToolsResult,
+        CallToolRequestParams,
+        CallToolResult,
+    )
 
     mcp_server = Server("sandbox-mcp")
 
-    @mcp_server.list_tools()
-    async def handle_list_tools():
-        return server.list_tools()
+    async def handle_list_tools(ctx, _request):
+        return ListToolsResult(tools=server.list_tools())
 
-    @mcp_server.call_tool()
-    async def handle_call_tool(name, arguments):
-        return server.call_tool(name, arguments)
+    mcp_server.add_request_handler("tools/list", ListToolsRequest, handle_list_tools)
+
+    async def handle_call_tool(ctx, params):
+        content = server.call_tool(params.name, params.arguments)
+        return CallToolResult(content=content, is_error=False)
+
+    mcp_server.add_request_handler("tools/call", CallToolRequestParams, handle_call_tool)
 
     return mcp_server
 
