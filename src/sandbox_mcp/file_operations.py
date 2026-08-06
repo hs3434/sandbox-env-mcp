@@ -385,6 +385,23 @@ class FileOperations:
             "hint": hint,
             "output": "\n".join(numbered) + ("\n" if numbered else ""),
         }
+
+        # Detect encoding mismatch: compare raw bytes against displayed text.
+        # sample comes from [IO.File]::ReadAllBytes (raw on-disk bytes);
+        # text comes from Get-Content (system default encoding on Windows).
+        # If they disagree, the file encoding does not match the system codepage.
+        try:
+            raw_start = _strip_bom(_strip_terminal_fence_leaks(sample.decode("utf-8")))[0]
+        except UnicodeDecodeError:
+            raw_start = None
+        if raw_start is not None and raw_start != text[: len(raw_start)]:
+            result["encoding_hint"] = (
+                "Displayed content may be garbled: the file appears to use "
+                "UTF-8 encoding, but the remote system's default codepage "
+                "is different.  Consider setting the system to UTF-8 "
+                "(chcp 65001) or re-reading with the shell tool."
+            )
+
         _attach_safety_advisory(result, advisory)
         return result
 
@@ -475,7 +492,12 @@ class FileOperations:
                 "error": "could not re-read file after write",
             }
         actual = verify.get("output") or ""
-        if _strip_bom(actual)[0] != content_to_write:
+        # Get-Content (without -Raw) emits each line with a \r\n
+        # terminator, even the last one.  Normalise CRLF→LF and strip
+        # trailing whitespace so the comparison is line-ending agnostic.
+        actual_norm = _strip_bom(actual.replace("\r\n", "\n").rstrip("\n"))[0]
+        expected_norm = _strip_bom(content_to_write.replace("\r\n", "\n").rstrip("\n"))[0]
+        if actual_norm != expected_norm:
             return {
                 "status": "error",
                 "stage": "verify",
@@ -572,7 +594,7 @@ class FileOperations:
         expected = full_content
         if ending == "\r\n":
             expected = expected.replace("\r\n", "\n").replace("\n", "\r\n")
-        if _strip_bom(actual)[0] != expected:
+        if _strip_bom(actual)[0] != _strip_bom(expected)[0]:
             return {"status": "error", "error": "patch did not persist"}
 
         result = {"status": "ok", "path": path, "matches": count, "fuzzy": fuzzy, "diff": diff}

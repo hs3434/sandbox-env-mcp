@@ -90,7 +90,7 @@ class PowerShellProvider(ShellProvider):
 
     def cat_command(self, path: str) -> str:
         p = self._esc(path)
-        return f"Get-Content '{p}' -Raw 2>$null"
+        return f"Get-Content '{p}' 2>$null"
 
     def list_dir_command(self, dir_: str, limit: int = 50) -> str:
         d = self._esc(dir_)

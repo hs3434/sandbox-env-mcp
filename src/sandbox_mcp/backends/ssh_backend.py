@@ -464,11 +464,10 @@ class SSHBackend(Backend):
         ARG_MAX limit entirely. The remote ``set -e`` ensures the script
         aborts on any error.
 
-        ``content`` is forwarded as-is — the caller's bytes must match
-        the remote console's InputEncoding (GBK on Chinese Windows,
-        UTF-8 on Linux/macOS).  Sandbox-mcp does NOT re-encode here,
-        because re-encoding a string assumed by the caller would lose
-        information on code pages not supported by Python's codecs.
+        *content* is the caller's bytes (always UTF-8 from FileOperations).
+        Before forwarding, we reconcile with the remote console's
+        InputEncoding so that ``[Console]::In.ReadToEnd()`` on the other
+        side decodes correctly (e.g. GBK on Chinese Windows).
         """
         import os as _os
 
@@ -488,6 +487,11 @@ class SSHBackend(Backend):
                 if mkdir.get("hint"):
                     result["hint"] = mkdir["hint"]
                 return result
+
+        target = self._targets.get(name, {})
+        input_encoding = target.get("input_encoding", "utf-8")
+        if input_encoding and input_encoding.lower() not in ("utf-8", "utf8"):
+            content = content.decode("utf-8").encode(input_encoding, errors="replace")
 
         script = provider.atomic_write_script(path)
         try:

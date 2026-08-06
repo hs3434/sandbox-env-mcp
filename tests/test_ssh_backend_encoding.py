@@ -198,7 +198,7 @@ def test_exec_oneoff_handles_undecodable_bytes_without_crashing(ssh_backend, gbk
     assert isinstance(result["output"], str)
 
 
-def test_write_file_does_not_touch_encoding_and_streams_bytes(ssh_backend, gbk_probe):
+def test_write_file_reencodes_utf8_to_input_encoding(ssh_backend, gbk_probe):
     ssh_backend.create(
         name="win",
         purpose="builds",
@@ -206,13 +206,11 @@ def test_write_file_does_not_touch_encoding_and_streams_bytes(ssh_backend, gbk_p
         user="hs3434",
         os_type="windows",
     )
-    # Chinese content encoded as GBK bytes (caller's responsibility)
-    content = "你好世界".encode("gbk")
+    content = "你好世界".encode()
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout=b"", stderr=b"")
         result = ssh_backend.write_file("win", "C:\\tmp\\hi.txt", content)
     assert result["status"] == "ok"
-    assert result["bytes_written"] == len(content)
     call = mock_run.call_args
-    # Must NOT re-encode — bytes the caller gave us are bytes the remote reads.
-    assert call.kwargs["input"] == content
+    # UTF-8 bytes are reconciled to GBK so [Console]::In reads correctly.
+    assert call.kwargs["input"] == "你好世界".encode("gbk")

@@ -174,7 +174,6 @@ class TestPowerShellProvider:
     def test_cat_command(self, ps):
         cmd = ps.cat_command("C:\\workspace\\app.py")
         assert "Get-Content" in cmd
-        assert "-Raw" in cmd
         assert "2>$null" in cmd
 
     def test_list_dir_command(self, ps):

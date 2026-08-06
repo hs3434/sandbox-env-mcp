@@ -780,10 +780,10 @@ def _make_mcp_server(server: SandboxServer):
     """
     from mcp.server import Server
     from mcp.types import (
-        ListToolsRequest,
-        ListToolsResult,
         CallToolRequestParams,
         CallToolResult,
+        ListToolsRequest,
+        ListToolsResult,
     )
 
     mcp_server = Server("sandbox-mcp")
