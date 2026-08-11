@@ -280,6 +280,55 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
     return "\n".join(diagnostics), "\n".join(payload)
 
 
+_RG_NOT_FOUND_PATTERNS = (
+    "is not recognized",  # PowerShell English: "rg : The term 'rg' is not recognized..."
+    "未识别",  # PowerShell Chinese: "无法将\nrg 项识别为 cmdlet"
+    "项识别",  # PowerShell Chinese (shorter)
+    "无法将",  # PowerShell Chinese (sentence start)
+    "cannot find",  # PowerShell, CMD
+    "command not found",  # bash
+    "not found",  # generic
+)
+_RG_INSTALL_HINTS = (
+    "Install ripgrep on the target machine, e.g. one of:\n"
+    "  Windows:   winget install BurntSushi.ripgrep  "
+    "(or: choco install ripgrep, scoop install ripgrep)\n"
+    "  Linux:     apt install ripgrep / dnf install ripgrep / apk add ripgrep\n"
+    "  macOS:     brew install ripgrep\n"
+    "Then retry the file_search call."
+)
+
+
+def _detect_rg_missing(result: dict, provider: ShellProvider | None) -> dict | None:
+    """Return a structured error dict if ``rg`` is not installed on the target.
+
+    Returns ``None`` when the command produced results, succeeded, or the
+    failure is unrelated to ripgrep being missing (e.g. permission denied,
+    bad path, etc. — those keep their existing diagnostics flow).
+
+    Match on combined output/stderr text alone: PowerShell pipelines
+    (``rg ... 2>&1 | Select-Object -First N``) mask the exit code of the
+    first command, so we cannot rely on ``exit_code`` to detect missing
+    binaries there.
+    """
+    output = result.get("output") or ""
+    stderr = result.get("stderr") or ""
+    combined = (output + "\n" + stderr).lower()
+    if not any(pat in combined for pat in _RG_NOT_FOUND_PATTERNS):
+        return None
+    is_windows = bool(provider and provider.default_shell == "powershell.exe")
+    return {
+        "status": "error",
+        "error_kind": "rg_not_installed",
+        "error": (
+            "ripgrep (rg) is not installed on the target machine. "
+            "file_search requires rg to be on PATH."
+        ),
+        "hint": _RG_INSTALL_HINTS,
+        "is_windows": is_windows,
+    }
+
+
 # ---- Main class ------------------------------------------------------------
 
 
@@ -655,6 +704,10 @@ class FileOperations:
         fetch = limit + offset
         cmd = self._provider.search_files_command(pattern, path, fetch)
         result = self._backend.exec_oneoff(machine, cmd, timeout=60)
+        missing = _detect_rg_missing(result, self._provider)
+        if missing is not None:
+            missing["results"] = []
+            return missing
         diagnostics, payload = _split_tool_diagnostics(result.get("output") or "")
         files = [f for f in payload.splitlines() if f]
         truncated = len(files) >= fetch or bool(diagnostics)
@@ -682,6 +735,10 @@ class FileOperations:
             pattern, path, file_glob, limit + offset, output_mode, context
         )
         result = self._backend.exec_oneoff(machine, cmd, timeout=60)
+        missing = _detect_rg_missing(result, self._provider)
+        if missing is not None:
+            missing["results"] = []
+            return missing
         diagnostics, payload = _split_tool_diagnostics(result.get("output") or "")
         if result.get("exit_code") == 2 and not payload.strip():
             return {

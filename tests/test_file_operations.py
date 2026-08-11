@@ -351,3 +351,91 @@ def test_search_separates_rg_diagnostics(fops, backend):
 def test_search_rejects_unknown_search_type(fops, backend):
     result = fops.search("foo", machine="dev", search_type="bogus")
     assert result["status"] == "error"
+
+
+def test_search_files_returns_rg_install_hint_on_windows(fops, backend):
+    """When ``rg`` is missing on Windows, surface an error_kind + install hint."""
+    backend.exec_oneoff.return_value = {
+        "exit_code": 9009,
+        "output": (
+            "rg : The term 'rg' is not recognized as the name of a cmdlet, "
+            "function, script file, or operable program.\n"
+        ),
+        "stderr": "",
+    }
+    result = fops.search("*.py", machine="dev", search_type="files")
+    assert result["status"] == "error"
+    assert result["error_kind"] == "rg_not_installed"
+    assert "ripgrep" in result["hint"]
+    assert "winget" in result["hint"]
+    assert result["results"] == []
+
+
+def test_search_content_returns_rg_install_hint_on_windows(fops, backend):
+    backend.exec_oneoff.return_value = {
+        "exit_code": 9009,
+        "output": "",
+        "stderr": "rg : The term 'rg' is not recognized as the name of a cmdlet.",
+    }
+    result = fops.search("foo", machine="dev", search_type="content")
+    assert result["status"] == "error"
+    assert result["error_kind"] == "rg_not_installed"
+    assert "ripgrep" in result["hint"]
+    assert result["results"] == []
+
+
+def test_search_files_returns_rg_install_hint_on_linux(fops, backend):
+    """Same detection works for bash when rg is missing (exit 127)."""
+    backend.exec_oneoff.return_value = {
+        "exit_code": 127,
+        "output": "",
+        "stderr": "bash: rg: command not found",
+    }
+    result = fops.search("*.py", machine="dev", search_type="files")
+    assert result["status"] == "error"
+    assert result["error_kind"] == "rg_not_installed"
+    assert "ripgrep" in result["hint"]
+
+
+def test_search_does_not_treat_genuine_rg_error_as_missing(fops, backend):
+    """A real rg error (no matches with non-zero exit) must not trigger the hint."""
+    backend.exec_oneoff.return_value = {
+        "exit_code": 1,
+        "output": "",
+        "stderr": "",
+    }
+    result = fops.search("missing", machine="dev", search_type="files")
+    assert result["status"] == "ok"
+    assert result["results"] == []
+    assert "error_kind" not in result
+
+
+def test_search_detects_rg_missing_when_pipeline_exit_code_masks_it(fops, backend):
+    """PowerShell ``rg ... 2>&1 | Select-Object`` returns exit_code=0 even
+    when ``rg`` is missing; the detector must rely on the error text only."""
+    backend.exec_oneoff.return_value = {
+        "exit_code": 0,  # masked by Select-Object
+        "output": (
+            "rg : The term 'rg' is not recognized as the name of a cmdlet, "
+            "function, script file, or operable program.\n"
+        ),
+        "stderr": "",
+    }
+    result = fops.search("*.py", machine="dev", search_type="files")
+    assert result["status"] == "error"
+    assert result["error_kind"] == "rg_not_installed"
+
+
+def test_search_detects_rg_missing_with_chinese_powershell_error(fops, backend):
+    """Chinese Windows PowerShell emits the error in stderr via CLIXML."""
+    backend.exec_oneoff.return_value = {
+        "exit_code": 1,
+        "output": "",
+        "stderr": (
+            "<# CLIXML ...><S S=\"Error\">rg : 无法将\nrg 项识别为 cmdlet、"
+            "函数、脚本文件或可运行程序的名称</S></Objs>"
+        ),
+    }
+    result = fops.search("*.py", machine="dev", search_type="files")
+    assert result["status"] == "error"
+    assert result["error_kind"] == "rg_not_installed"
