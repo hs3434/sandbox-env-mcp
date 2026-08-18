@@ -52,12 +52,12 @@ def test_create_windows_target_probes_encoding(ssh_backend, gbk_probe):
         os_type="windows",
     )
     assert info.status == "running"
-    target = ssh_backend._targets["win"]
-    assert target["input_encoding"] == "gbk"
-    assert target["output_encoding"] == "gbk"
-    assert target["input_codepage"] == 936
-    assert target["output_codepage"] == 936
-    assert target["encoding_source"] in {"probe", "config", "default"}
+    state = ssh_backend._targets["win"]
+    assert state.input_encoding == "gbk"
+    assert state.output_encoding == "gbk"
+    assert state.input_codepage == 936
+    assert state.output_codepage == 936
+    assert state.encoding_source in {"probe", "config", "default"}
 
 
 def test_create_windows_target_probe_called_with_powershell(ssh_backend, gbk_probe):
@@ -97,11 +97,11 @@ def test_create_windows_target_falls_back_when_probe_fails(ssh_backend):
             user="builder",
             os_type="windows",
         )
-    target = ssh_backend._targets["win"]
+    state = ssh_backend._targets["win"]
     # Falls back to the config encoding, which defaults to gbk on Windows.
-    assert target["input_encoding"] == "gbk"
-    assert target["output_encoding"] == "gbk"
-    assert target["encoding_source"] in {"config", "default"}
+    assert state.input_encoding == "gbk"
+    assert state.output_encoding == "gbk"
+    assert state.encoding_source in {"config", "default"}
 
 
 def test_create_windows_target_uses_config_override_when_probe_fails(ssh_backend):
@@ -117,10 +117,10 @@ def test_create_windows_target_uses_config_override_when_probe_fails(ssh_backend
             os_type="windows",
             encoding="utf-8",
         )
-    target = ssh_backend._targets["win"]
-    assert target["input_encoding"] == "utf-8"
-    assert target["output_encoding"] == "utf-8"
-    assert target["encoding_source"] == "config"
+    state = ssh_backend._targets["win"]
+    assert state.input_encoding == "utf-8"
+    assert state.output_encoding == "utf-8"
+    assert state.encoding_source == "config"
 
 
 def test_create_linux_target_does_not_probe(ssh_backend):
@@ -132,10 +132,10 @@ def test_create_linux_target_does_not_probe(ssh_backend):
             host="10.0.0.2",
             user="ubuntu",
         )
-    target = ssh_backend._targets["lin"]
+    state = ssh_backend._targets["lin"]
     # Non-Windows targets still get utf-8 stored as default — no probe needed.
-    assert target["input_encoding"] == "utf-8"
-    assert target["output_encoding"] == "utf-8"
+    assert state.input_encoding == "utf-8"
+    assert state.output_encoding == "utf-8"
 
 
 def test_exec_oneoff_uses_raw_bytes_and_decodes_via_output_encoding(ssh_backend, gbk_probe):

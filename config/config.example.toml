@@ -137,11 +137,30 @@ socket_dir_prefix = "sandbox-mcp-ssh-"
 # console encoding, prompt function with exit code, PSReadLine
 # continuation prompt disabled).  ``encoding`` defaults to "gbk" for
 # Chinese Windows; pass "utf-8" if you've changed the box's code page.
+#
+# Fields:
+#   host              (required)  IP or hostname
+#   user              (required)  SSH user
+#   port              (optional)  SSH port, default 22
+#   key               (optional)  Path to private key (file must exist or load fails)
+#   os_type           (optional)  "linux" (default) | "windows"
+#   purpose           (optional)  Free-form label shown in machine_list
+#   shell             (optional)  Override default shell (empty = bash on linux,
+#                                  powershell.exe on windows)
+#   encoding          (optional)  Fallback codec used when the Windows probe fails
+#                                  (sets both input and output). Auto-resolved
+#                                  on successful probe, so leave unset unless you
+#                                  need a specific fallback.
+#   host_key_check    (optional)  StrictHostKeyChecking switch. Default false
+#                                  (auto-accept). Set true once known_hosts is
+#                                  populated for stricter security.
 [ssh.targets]
 # Example:
 #   win-build = { host = "192.168.1.100", user = "builder", os_type = "windows", shell = "powershell.exe", encoding = "gbk", key = "/home/sandbox/.sandbox-mcp/windows_rsa" }
 # Example:
 #   dev-box = { host = "10.0.0.5", user = "ubuntu" }
+# Example:
+#   bastion = { host = "10.0.0.7", user = "ops", port = 2222, key = "/home/sandbox/.sandbox-mcp/bastion_rsa", host_key_check = true }
 
 [shell]
 # Buffer sizes and the default per-call output cap (in bytes).

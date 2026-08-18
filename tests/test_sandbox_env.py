@@ -660,3 +660,99 @@ def test_shell_new_omits_bash_pid_when_ready(sandbox_env):
     result = sandbox_env.dispatch("shell_new", {"machine": "dev"})
     assert result["state"] == "ready"
     assert "bash_pid" not in result
+
+
+def test_list_targets_serializes_ssh_dataclass(monkeypatch, sandbox_env):
+    """list_targets must flatten SSHTarget dataclasses to JSON dicts
+    without choking on ``'SSHTarget object is not a mapping'``."""
+    from sandbox_mcp.config import SSHConfig, SSHTarget
+
+    target = SSHTarget(
+        host="10.0.0.1",
+        user="alice",
+        port=2222,
+        os_type="windows",
+        shell="powershell.exe",
+        encoding="gbk",
+    )
+    monkeypatch.setattr(
+        "sandbox_mcp.sandbox_env._load_config",
+        lambda: MagicMock(ssh=SSHConfig(targets={"devbox": target})),
+    )
+    result = sandbox_env.dispatch("list_targets", {})
+    assert "targets" in result
+    assert "devbox" in result["targets"]
+    entry = result["targets"]["devbox"]
+    # Wire format: all dataclass fields + backend label, no surprise.
+    assert entry["host"] == "10.0.0.1"
+    assert entry["user"] == "alice"
+    assert entry["port"] == 2222
+    assert entry["os_type"] == "windows"
+    assert entry["encoding"] == "gbk"
+    assert entry["backend"] == "ssh"
+
+
+def test_list_targets_handles_empty_config(monkeypatch, sandbox_env):
+    """list_targets with no [ssh.targets] should return ``{'targets': {}}``."""
+    from sandbox_mcp.config import SSHConfig
+
+    monkeypatch.setattr(
+        "sandbox_mcp.sandbox_env._load_config",
+        lambda: MagicMock(ssh=SSHConfig(targets={})),
+    )
+    result = sandbox_env.dispatch("list_targets", {})
+    assert result == {"targets": {}}
+
+
+def test_connect_registers_machine_and_returns_status(monkeypatch, sandbox_env):
+    """connect(name) looks up [ssh.targets.{name}] and calls register()."""
+    from sandbox_mcp.backends.base import TargetInfo
+    from sandbox_mcp.config import SSHConfig, SSHTarget
+
+    target = SSHTarget(
+        host="10.0.0.1",
+        user="alice",
+        port=2222,
+        key=None,
+        os_type="linux",
+        shell="bash",
+    )
+    monkeypatch.setattr(
+        "sandbox_mcp.sandbox_env._load_config",
+        lambda: MagicMock(ssh=SSHConfig(targets={"devbox": target})),
+    )
+    sandbox_env._machines.register.return_value = TargetInfo(
+        name="devbox", backend="ssh", status="running"
+    )
+    result = sandbox_env.dispatch("connect", {"name": "devbox"})
+    assert result["name"] == "devbox"
+    assert result["status"] == "running"
+    assert result["backend"] == "ssh"
+    sandbox_env._machines.register.assert_called_once()
+    call_kwargs = sandbox_env._machines.register.call_args.kwargs
+    assert call_kwargs["purpose"] == ""  # SSHTarget.purpose default
+    # Connection fields forwarded as scalar kwargs.
+    assert call_kwargs["host"] == "10.0.0.1"
+    assert call_kwargs["user"] == "alice"
+    assert call_kwargs["port"] == 2222
+    # No "purpose" collision (a regression that broke SSH connect before
+    # dataclass refactor).
+    assert "purpose" not in call_kwargs.get("__conflicts__", [])
+
+
+def test_connect_unknown_target_returns_error(monkeypatch, sandbox_env):
+    from sandbox_mcp.config import SSHConfig
+
+    monkeypatch.setattr(
+        "sandbox_mcp.sandbox_env._load_config",
+        lambda: MagicMock(ssh=SSHConfig(targets={})),
+    )
+    result = sandbox_env.dispatch("connect", {"name": "ghost"})
+    assert "error" in result
+    assert "ghost" in result["error"]
+
+
+def test_connect_missing_name_returns_error(sandbox_env):
+    result = sandbox_env.dispatch("connect", {})
+    assert "error" in result
+    assert "name" in result["error"]

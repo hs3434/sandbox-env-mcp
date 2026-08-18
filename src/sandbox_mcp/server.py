@@ -467,11 +467,25 @@ class SandboxServer:
                         f"[default_machine] backend='ssh' with name={name!r} "
                         f"requires [ssh.targets.{name}] to be defined"
                     )
+                # ``target`` is a validated SSHTarget dataclass; pass it
+                # through ``**dataclasses.asdict`` so ``register`` ->
+                # ``backend.create`` still receives scalar kwargs.  Strip
+                # ``None`` (defaults) and any key ``register`` already
+                # takes as an explicit kwarg (purpose) to avoid "multiple
+                # values for keyword argument" collisions.
+                import dataclasses as _dc
+
+                _forbidden = {"purpose"}
+                target_kwargs = {
+                    k: v
+                    for k, v in _dc.asdict(target).items()
+                    if v is not None and k not in _forbidden
+                }
                 info = self.machines.register(
                     name,
                     self._ssh_backend,
                     purpose=cfg.purpose,
-                    **target,
+                    **target_kwargs,
                 )
             else:
                 raise RuntimeError(

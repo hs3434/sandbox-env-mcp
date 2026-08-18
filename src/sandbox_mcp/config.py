@@ -149,21 +149,116 @@ class DockerConfig:
 
 
 @dataclass(frozen=True)
+class SSHTarget:
+    """Schema for one entry under ``[ssh.targets.<name>]`` in config.toml.
+
+    All required fields are validated at load time so misconfiguration
+    surfaces immediately at startup instead of at first connection.
+    """
+
+    host: str
+    user: str
+    port: int = 22
+    key: str | None = None
+    os_type: str = "linux"  # "linux" | "windows"
+    purpose: str = ""
+    shell: str = ""  # empty → backend default (bash on linux, powershell.exe on windows)
+    # Coarse encoding switch — sets both input and output at once when
+    # probe fails on Windows.  ``input_encoding`` / ``output_encoding``
+    # are auto-resolved by the backend (probe → config → default) and
+    # intentionally not exposed here.
+    encoding: str | None = None
+    # StrictHostKeyChecking switch. Default false (auto-accept) keeps the
+    # zero-config feel; flip to true once you've populated known_hosts.
+    host_key_check: bool = False
+
+    def __post_init__(self) -> None:
+        errors: list[str] = []
+        if not self.host or not self.host.strip():
+            errors.append("host must be non-empty")
+        if not self.user or not self.user.strip():
+            errors.append("user must be non-empty")
+        if not (1 <= int(self.port) <= 65535):
+            errors.append(f"port must be in 1..65535, got {self.port!r}")
+        if self.os_type not in ("linux", "windows"):
+            errors.append(f"os_type must be 'linux' or 'windows', got {self.os_type!r}")
+        if self.key is not None and self.key.strip():
+            from os.path import expanduser, isfile
+
+            expanded = expanduser(self.key)
+            if not isfile(expanded):
+                errors.append(f"key path not found: {expanded}")
+        if self.encoding is not None and not self.encoding.strip():
+            errors.append("encoding must be non-empty when set")
+        if self.shell is not None and not isinstance(self.shell, str):
+            errors.append("shell must be a string")
+        if errors:
+            raise ValueError(
+                f"Invalid SSH target (host={self.host!r}, user={self.user!r}): " + "; ".join(errors)
+            )
+
+
+def _coerce_targets(raw: dict | None) -> dict[str, SSHTarget]:
+    """Convert raw TOML table to ``dict[str, SSHTarget]`` with validation.
+
+    Unknown keys inside each target table are silently dropped to match
+    how ``_build_from_dict`` handles every other section — a typo like
+    ``encodng = "gbk"`` should not abort startup, it should be ignored
+    (the resulting target falls back to defaults for the missing field).
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("[ssh.targets] must be a table of name → target")
+    valid = {f for f in SSHTarget.__dataclass_fields__}
+    out: dict[str, SSHTarget] = {}
+    for name, entry in raw.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"ssh.targets.{name} must be a table")
+        out[name] = SSHTarget(**{k: v for k, v in entry.items() if k in valid})
+    return out
+
+
+@dataclass(frozen=True)
+class SSHMachineState:
+    """Runtime state for a registered SSH machine.
+
+    Carries the validated :class:`SSHTarget` from config plus state that
+    only exists after ``SSHBackend.create()`` has run (socket paths,
+    resolved encodings, codepages, start time).  All fields are required
+    so callers never have to guess whether a key was populated.
+    """
+
+    target: SSHTarget
+    socket: str
+    socket_dir: str
+    input_codepage: int | None
+    output_codepage: int | None
+    encoding_source: str  # "default" | "config" | "probe"
+    input_encoding: str
+    output_encoding: str
+    started_at: float
+
+
+@dataclass(frozen=True)
 class SSHConfig:
     connect_timeout: int = 10
     socket_dir_prefix: str = "sandbox-mcp-ssh-"
     # Pre-defined SSH targets the agent can discover and connect to.
     # The ``[default_machine] name`` is looked up in this table when
-    # the backend is "ssh".
-    # Format:
-    #   [ssh.targets.default]
-    #   host = "192.168.1.100"
-    #   user = "ubuntu"
+    # the backend is "ssh".  Each value is a validated :class:`SSHTarget`.
+    # TOML schema:
     #   [ssh.targets.win-build]
     #   host = "192.168.1.100"
     #   user = "builder"
-    #   os_type = "windows"
-    targets: dict[str, dict] = field(default_factory=dict)
+    #   port = 22            # optional, default 22
+    #   key = "/path/to/key" # optional
+    #   os_type = "windows"  # optional, default "linux"
+    #   purpose = "..."      # optional
+    #   shell = "powershell.exe"  # optional
+    #   encoding = "gbk"     # optional, fallback codec when probe fails
+    #   host_key_check = false    # optional, default false
+    targets: dict[str, SSHTarget] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -304,12 +399,22 @@ def _build_from_dict(data: dict) -> AppConfig:
         valid = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in raw.items() if k in valid})
 
+    ssh_raw = data.get("ssh") or {}
+    if not isinstance(ssh_raw, dict):
+        raise ValueError("Config section [ssh] must be a table")
+    ssh_top = {k: v for k, v in ssh_raw.items() if k != "targets"}
+    ssh_targets = _coerce_targets(ssh_raw.get("targets"))
+    ssh = SSHConfig(
+        targets=ssh_targets,
+        **{k: v for k, v in ssh_top.items() if k in SSHConfig.__dataclass_fields__},
+    )
+
     return AppConfig(
         server=section("server", ServerConfig),
         storage=section("storage", StorageConfig),
         audit=section("audit", AuditConfig),
         docker=section("docker", DockerConfig),
-        ssh=section("ssh", SSHConfig),
+        ssh=ssh,
         shell=section("shell", ShellConfig),
         files=section("files", FilesConfig),
         default_machine=section("default_machine", DefaultMachineConfig),

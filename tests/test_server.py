@@ -243,14 +243,16 @@ def test_provision_default_machine_ssh(monkeypatch, tmp_path):
     sets the default machine."""
     from sandbox_mcp.backends.base import TargetInfo
 
+    key_path = tmp_path / "id_ed25519"
+    key_path.write_text("dummy")
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_text(
-        """
+        f"""
 [ssh.targets.remote]
 host = "10.0.0.5"
 user = "ubuntu"
 port = 2222
-key = "/k/id_ed25519"
+key = "{key_path}"
 """
     )
     monkeypatch.setenv("SANDBOX_MCP_CONFIG", str(cfg_file))
@@ -270,7 +272,7 @@ key = "/k/id_ed25519"
     assert kwargs["host"] == "10.0.0.5"
     assert kwargs["user"] == "ubuntu"
     assert kwargs["port"] == 2222
-    assert kwargs["key"] == "/k/id_ed25519"
+    assert kwargs["key"] == str(key_path)
     assert srv.machines.get_default() == "remote"
 
 
@@ -428,7 +430,7 @@ def test_shell_remove_description_lists_canonical_states(server):
 def test_shell_exec_input_schema_documents_wait_default(server):
     """shell_exec schema must tell the agent that wait defaults to true."""
     tool = _tool(server, "shell_exec")
-    props = tool.inputSchema["properties"]
+    props = tool.input_schema["properties"]
     assert props["wait"]["description"].lower().startswith("wait"), (
         f"shell_exec.wait description missing 'wait' prefix: {props['wait']!r}"
     )

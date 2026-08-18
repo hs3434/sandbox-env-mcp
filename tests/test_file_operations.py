@@ -432,7 +432,7 @@ def test_search_detects_rg_missing_with_chinese_powershell_error(fops, backend):
         "exit_code": 1,
         "output": "",
         "stderr": (
-            "<# CLIXML ...><S S=\"Error\">rg : 无法将\nrg 项识别为 cmdlet、"
+            '<# CLIXML ...><S S="Error">rg : 无法将\nrg 项识别为 cmdlet、'
             "函数、脚本文件或可运行程序的名称</S></Objs>"
         ),
     }

@@ -253,9 +253,11 @@ def test_default_machine_defaults_enabled():
 def test_default_machine_load_from_toml(monkeypatch, tmp_path):
     """backend='ssh' target params come from [ssh.targets].  The
     [default_machine] name is used to look up the target."""
+    key_path = tmp_path / "id_test"
+    key_path.write_text("dummy")
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_text(
-        """
+        f"""
 [default_machine]
 enabled = true
 backend = "ssh"
@@ -266,7 +268,7 @@ purpose = "auto-provisioned remote"
 host = "10.0.0.5"
 user = "ubuntu"
 port = 2222
-key = "/home/ubuntu/.ssh/id_ed25519"
+key = "{key_path}"
 """
     )
     monkeypatch.setenv("SANDBOX_MCP_CONFIG", str(cfg_file))
@@ -278,10 +280,10 @@ key = "/home/ubuntu/.ssh/id_ed25519"
     assert dm.purpose == "auto-provisioned remote"
     target = cfg.ssh.targets.get("remote-dev")
     assert target is not None
-    assert target["host"] == "10.0.0.5"
-    assert target["user"] == "ubuntu"
-    assert target["port"] == 2222
-    assert target["key"] == "/home/ubuntu/.ssh/id_ed25519"
+    assert target.host == "10.0.0.5"
+    assert target.user == "ubuntu"
+    assert target.port == 2222
+    assert target.key == str(key_path)
 
 
 def test_default_machine_env_overrides(monkeypatch):
@@ -309,3 +311,69 @@ name = "from-file"
     cfg = load()
     assert cfg.default_machine.enabled is True
     assert cfg.default_machine.name == "from-env"
+
+
+def test_ssh_targets_validated_on_load(monkeypatch, tmp_path):
+    """A [ssh.targets] entry that violates SSHTarget validation must
+    fail ``load()`` with a useful, field-specific error — the
+    ``_build_from_dict`` → ``_coerce_targets`` → ``SSHTarget`` chain
+    surfaces every violation together, not just the first."""
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(
+        """
+[ssh.targets.bad]
+host = ""
+user = "ubuntu"
+port = 99999
+os_type = "macos"
+"""
+    )
+    monkeypatch.setenv("SANDBOX_MCP_CONFIG", str(cfg_file))
+    with pytest.raises(ValueError) as exc:
+        load()
+    msg = str(exc.value)
+    # Use precise substrings (the SSHTarget error format) instead of
+    # bare field names that would also appear in unrelated contexts.
+    assert "host must be non-empty" in msg
+    assert "port must be in 1..65535" in msg
+    assert "os_type must be 'linux' or 'windows'" in msg
+
+
+def test_ssh_targets_typed_dict_default(monkeypatch, tmp_path):
+    """No [ssh.targets] section at all → ``cfg.ssh.targets`` is the
+    typed default (empty dict[str, SSHTarget])."""
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text("")
+    monkeypatch.setenv("SANDBOX_MCP_CONFIG", str(cfg_file))
+    cfg = load()
+    assert cfg.ssh.targets == {}
+    assert isinstance(cfg.ssh.targets, dict)
+
+
+def test_ssh_targets_unknown_keys_silently_dropped(monkeypatch, tmp_path):
+    """Unknown keys inside a [ssh.targets.*] table are silently
+    ignored, matching the rest of the config loader.  Useful when
+    sandbox-mcp gains new SSHTarget fields but the operator's older
+    config.toml still has stale keys from a future version (shouldn't
+    happen here, but the loader is permissive elsewhere)."""
+    key_path = tmp_path / "id_test"
+    key_path.write_text("dummy")
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(
+        f"""
+[ssh.targets.dev]
+host = "10.0.0.1"
+user = "ubuntu"
+key = "{key_path}"
+future_field = "ignored"
+"""
+    )
+    monkeypatch.setenv("SANDBOX_MCP_CONFIG", str(cfg_file))
+    cfg = load()
+    target = cfg.ssh.targets["dev"]
+    assert target.host == "10.0.0.1"
+    assert target.user == "ubuntu"
+    assert target.key == str(key_path)
+    # ``future_field`` was dropped silently — we don't have a public
+    # surface to assert that directly, but the fact that load() didn't
+    # raise is the contract.

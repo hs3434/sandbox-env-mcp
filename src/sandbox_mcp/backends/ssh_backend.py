@@ -26,7 +26,13 @@ import tempfile
 import time
 
 from sandbox_mcp.backends.base import Backend, TargetInfo
-from sandbox_mcp.config import load as _load_config
+from sandbox_mcp.config import (
+    SSHMachineState,
+    SSHTarget,
+)
+from sandbox_mcp.config import (
+    load as _load_config,
+)
 from sandbox_mcp.encoding_utils import (
     EncodingInfo,
     probe_remote_encoding,
@@ -65,13 +71,19 @@ class SSHBackend(Backend):
 
     def __init__(self):
         self._ssh = _find_ssh()
-        self._targets: dict[str, dict] = {}
+        self._targets: dict[str, SSHMachineState] = {}
         self._provider: dict[str, ShellProvider] = {}
 
+    @staticmethod
+    def _strict_host_key_arg(target: SSHTarget) -> list[str]:
+        """StrictHostKeyChecking option based on ``host_key_check``."""
+        value = "yes" if target.host_key_check else "no"
+        return ["-o", f"StrictHostKeyChecking={value}"]
+
     def _socket_path(self, name):
-        target = self._targets.get(name)
-        if target is not None and "socket" in target:
-            return target["socket"]
+        state = self._targets.get(name)
+        if state is not None:
+            return state.socket
         # Per-target socket directory; predictable name but isolated.
         prefix = _load_config().ssh.socket_dir_prefix
         d = tempfile.mkdtemp(prefix=f"{prefix}{name}-")
@@ -88,12 +100,12 @@ class SSHBackend(Backend):
         or idle timeouts exceeding ``ControlPersist``.  This method is
         called before every operation so callers never see a stale socket.
         """
-        target = self._targets.get(name)
-        if target is None:
+        state = self._targets.get(name)
+        if state is None:
             return
-        socket = self._socket_path(name)
-        user = target.get("user", "")
-        host = target.get("host", "")
+        socket = state.socket
+        user = state.target.user
+        host = state.target.host
         try:
             check = subprocess.run(
                 [self._ssh, "-S", socket, "-O", "check", f"{user}@{host}"],
@@ -107,40 +119,53 @@ class SSHBackend(Backend):
 
         # Stale — try reconnect.  Machine stays registered regardless
         # of outcome so the agent can see the "disconnected" status.
-        keys = {"host", "user", "port", "key", "os_type", "encoding"}
-        self.create(name, **{k: v for k, v in target.items() if k in keys})
+        self.create(
+            name,
+            purpose=state.target.purpose,
+            **{
+                k: v
+                for k, v in state.target.__dict__.items()
+                if k in {"host", "user", "port", "key", "os_type", "encoding", "shell"}
+            },
+        )
 
     def _ssh_base_args(self, name):
-        target = self._targets.get(name)
-        if target is None:
+        state = self._targets.get(name)
+        if state is None:
             raise RuntimeError(f"Unknown SSH target: {name}")
-        socket = self._socket_path(name)
+        target = state.target
         connect_timeout = _load_config().ssh.connect_timeout
         args = [
             self._ssh,
             "-o",
-            f"ControlPath={socket}",
-            "-o",
-            "StrictHostKeyChecking=no",
+            f"ControlPath={state.socket}",
+            *self._strict_host_key_arg(target),
             "-o",
             f"ConnectTimeout={connect_timeout}",
         ]
-        port = target.get("port", 22)
-        args += ["-p", str(port)]
-        key = target.get("key")
-        if key:
-            args += ["-i", key]
-        user = target.get("user", "")
-        host = target.get("host", "")
-        args.append(f"{user}@{host}" if user else host)
+        args += ["-p", str(target.port)]
+        if target.key:
+            args += ["-i", target.key]
+        args.append(f"{target.user}@{target.host}" if target.user else target.host)
         return args
 
     def create(self, name, purpose="", **kwargs):
-        host = kwargs.get("host", "")
-        user = kwargs.get("user", "")
-        port = kwargs.get("port", 22)
-        key = kwargs.get("key")
-        os_type = kwargs.get("os_type", "linux")
+        # Accept either a fully-built SSHTarget via ``target=`` or the
+        # legacy ``host=user=port=key=os_type=encoding=...`` kwargs form.
+        if "target" in kwargs and isinstance(kwargs["target"], SSHTarget):
+            target = kwargs.pop("target")
+            if purpose == "" and target.purpose:
+                purpose = target.purpose
+        else:
+            # Build SSHTarget from kwargs so config validation runs once,
+            # including key-path existence.
+            target_kwargs = {
+                k: kwargs.pop(k)
+                for k in ("host", "user", "port", "key", "os_type", "encoding", "shell")
+                if k in kwargs
+            }
+            target = SSHTarget(**target_kwargs)
+        host, user, port = target.host, target.user, target.port
         connect_timeout = _load_config().ssh.connect_timeout
 
         cmd = [
@@ -150,15 +175,14 @@ class SSHBackend(Backend):
             self._socket_path(name),
             "-o",
             "ControlPersist=300",
-            "-o",
-            "StrictHostKeyChecking=no",
+            *self._strict_host_key_arg(target),
             "-o",
             f"ConnectTimeout={connect_timeout}",
             "-p",
             str(port),
         ]
-        if key:
-            cmd += ["-i", key]
+        if target.key:
+            cmd += ["-i", target.key]
         cmd.append(f"{user}@{host}")
         cmd.append("true")
 
@@ -186,35 +210,27 @@ class SSHBackend(Backend):
             ).strip() or f"ssh connection to {user}@{host}:{port} failed (exit {result.returncode})"
             return TargetInfo(name=name, backend="ssh", status="error", purpose=purpose, error=err)
 
-        encoding_info = self._resolve_encoding(name, **kwargs)
-        encoding = encoding_info.output_encoding
-
-        self._targets[name] = {
-            "host": host,
-            "user": user,
-            "port": port,
-            "key": key,
-            "os_type": os_type,
-            "encoding": encoding,
-            "input_encoding": encoding_info.input_encoding,
-            "output_encoding": encoding_info.output_encoding,
-            "input_codepage": encoding_info.input_codepage,
-            "output_codepage": encoding_info.output_codepage,
-            "encoding_source": encoding_info.source,
-            "socket": self._socket_path(name),
-            "socket_dir": self._socket_dir(name),
-            "purpose": purpose,
-            "started_at": time.time(),
-        }
+        encoding_info = self._resolve_encoding(name, target=target)
         provider_kwargs = (
             {
                 "input_encoding": encoding_info.input_encoding,
                 "output_encoding": encoding_info.output_encoding,
             }
-            if os_type == "windows"
+            if target.os_type == "windows"
             else {}
         )
-        self._provider[name] = ShellProviderFactory.create(os_type, **provider_kwargs)
+        self._provider[name] = ShellProviderFactory.create(target.os_type, **provider_kwargs)
+        self._targets[name] = SSHMachineState(
+            target=target,
+            socket=self._socket_path(name),
+            socket_dir=self._socket_dir(name),
+            input_codepage=encoding_info.input_codepage,
+            output_codepage=encoding_info.output_codepage,
+            encoding_source=encoding_info.source,
+            input_encoding=encoding_info.input_encoding,
+            output_encoding=encoding_info.output_encoding,
+            started_at=time.time(),
+        )
         return TargetInfo(name=name, backend="ssh", status="running", purpose=purpose)
 
     def _resolve_encoding(self, name: str, **kwargs) -> EncodingInfo:
@@ -226,45 +242,49 @@ class SSHBackend(Backend):
         * ``os_type == "windows"`` + probe succeeds → use probe, source
           ``"probe"``.
         * ``os_type == "windows"`` + probe fails + explicit
-          ``encoding=`` in kwargs → use it, source ``"config"``.
+          ``encoding=`` on the target → use it, source ``"config"``.
         * ``os_type == "windows"`` + probe fails + no explicit
           encoding → ``gbk`` on both sides, source ``"default"``.
         """
-        os_type = kwargs.get("os_type", "linux")
+        if "target" in kwargs and isinstance(kwargs["target"], SSHTarget):
+            target = kwargs["target"]
+        else:
+            target_kwargs = {
+                k: kwargs[k]
+                for k in ("host", "user", "port", "key", "os_type", "encoding", "shell")
+                if k in kwargs
+            }
+            target = SSHTarget(**target_kwargs)
 
-        if os_type != "windows":
+        if target.os_type != "windows":
             return EncodingInfo(
                 input_encoding="utf-8",
                 output_encoding="utf-8",
                 source="default",
             )
 
-        target = self._targets.get(name) or {}
         probe_args = [
             self._ssh,
             "-S",
             self._socket_path(name),
-            "-o",
-            "StrictHostKeyChecking=no",
+            *self._strict_host_key_arg(target),
             "-o",
             f"ConnectTimeout={_load_config().ssh.connect_timeout}",
             "-p",
-            str(target.get("port") or kwargs.get("port") or 22),
+            str(target.port),
         ]
-        key = target.get("key") or kwargs.get("key")
-        if key:
-            probe_args += ["-i", str(key)]
-        probe_args.append(
-            f"{target.get('user') or kwargs.get('user', '')}"
-            f"@{target.get('host') or kwargs.get('host', '')}"
-        )
-        fallback = str(kwargs.get("encoding") or "gbk")
+        if target.key:
+            probe_args += ["-i", target.key]
+        probe_args.append(f"{target.user}@{target.host}")
+
+        # Pick the fallback codec by precedence: ``encoding`` → "gbk".
+        fallback = target.encoding or "gbk"
 
         info = _probe_ssh_encoding(probe_args, fallback=fallback)
         if info.source == "probe":
             return info
         # Probe failed — explicitly respect an operator-provided encoding
-        explicit = kwargs.get("encoding")
+        explicit = target.encoding
         if explicit:
             return EncodingInfo(
                 input_encoding=explicit,
@@ -275,18 +295,19 @@ class SSHBackend(Backend):
 
     def start(self, name):
         """Reconnect SSH ControlMaster."""
-        target = self._targets.get(name, {})
-        keys = {"host", "user", "port", "key", "os_type", "encoding"}
-        return self.create(name, **{k: v for k, v in target.items() if k in keys})
+        state = self._targets.get(name)
+        if state is None:
+            return TargetInfo(name=name, backend="ssh", status="error")
+        return self.create(name, purpose=state.target.purpose, target=state.target)
 
     def stop(self, name):
         """Close the SSH master connection."""
-        if name not in self._targets:
+        state = self._targets.get(name)
+        if state is None:
             return TargetInfo(name=name, backend="ssh", status="error")
-        socket = self._socket_path(name)
-        target = self._targets.get(name, {})
-        user = target.get("user", "")
-        host = target.get("host", "")
+        socket = state.socket
+        user = state.target.user
+        host = state.target.host
         try:
             result = subprocess.run(
                 [self._ssh, "-S", socket, "-O", "exit", f"{user}@{host}"],
@@ -306,12 +327,13 @@ class SSHBackend(Backend):
         return TargetInfo(name=name, backend="ssh", status="stopped")
 
     def remove(self, name):
-        if name in self._targets:
+        state = self._targets.get(name)
+        if state is not None:
             # Clean up the per-target control-socket directory created by
             # ``tempfile.mkdtemp`` in ``_socket_path``.  Without this, a
             # long-running server leaks one dir + control socket per
             # SSH target it creates.
-            socket_dir = self._targets[name].get("socket_dir")
+            socket_dir = state.socket_dir
             with contextlib.suppress(Exception):
                 self.stop(name)
             self._targets.pop(name, None)
@@ -321,12 +343,13 @@ class SSHBackend(Backend):
         return {"machine": name, "status": "removed"}
 
     def get_info(self, name):
-        target = self._targets.get(name)
-        if not target:
+        state = self._targets.get(name)
+        if state is None:
             return TargetInfo(name=name, backend="ssh", status="error")
-        socket = self._socket_path(name)
-        user = target.get("user", "")
-        host = target.get("host", "")
+        socket = state.socket
+        user = state.target.user
+        host = state.target.host
+        purpose = state.target.purpose
 
         # Check if the ControlMaster socket is still alive.
         try:
@@ -340,14 +363,14 @@ class SSHBackend(Backend):
                     name=name,
                     backend="ssh",
                     status="running",
-                    purpose=target.get("purpose", ""),
+                    purpose=purpose,
                 )
             # Socket exists but is stale -> connection dropped.
             return TargetInfo(
                 name=name,
                 backend="ssh",
                 status="disconnected",
-                purpose=target.get("purpose", ""),
+                purpose=purpose,
                 error="SSH connection dropped. Next operation will auto-reconnect.",
             )
         except FileNotFoundError:
@@ -355,7 +378,7 @@ class SSHBackend(Backend):
                 name=name,
                 backend="ssh",
                 status="error",
-                purpose=target.get("purpose", ""),
+                purpose=purpose,
                 error="ssh binary not found",
             )
         except subprocess.TimeoutExpired:
@@ -363,7 +386,7 @@ class SSHBackend(Backend):
                 name=name,
                 backend="ssh",
                 status="disconnected",
-                purpose=target.get("purpose", ""),
+                purpose=purpose,
                 error="SSH socket check timed out",
             )
 
@@ -388,8 +411,8 @@ class SSHBackend(Backend):
 
     def _check_alive(self, name):
         """Return None if alive, or an error dict with guidance if dead."""
-        target = self._targets.get(name)
-        if target is None:
+        state = self._targets.get(name)
+        if state is None:
             return {
                 "exit_code": -1,
                 "output": "",
@@ -397,9 +420,9 @@ class SSHBackend(Backend):
                 "error_kind": "ssh_disconnected",
                 "hint": "Use connect(name) to reconnect.",
             }
-        socket = self._socket_path(name)
-        user = target.get("user", "")
-        host = target.get("host", "")
+        socket = state.socket
+        user = state.target.user
+        host = state.target.host
         try:
             check = subprocess.run(
                 [self._ssh, "-S", socket, "-O", "check", f"{user}@{host}"],
@@ -424,9 +447,15 @@ class SSHBackend(Backend):
         dead = self._check_alive(name)
         if dead:
             return dead
-        target = self._targets.get(name, {})
+        state = self._targets.get(name)
+        if state is None:
+            return self._check_alive(name) or {
+                "exit_code": -1,
+                "output": "",
+                "stderr": "unknown machine",
+            }
         provider = self._provider.get(name, ShellProviderFactory.create("linux"))
-        output_encoding = target.get("output_encoding") or provider.output_encoding
+        output_encoding = state.output_encoding or provider.output_encoding
         try:
             if provider.default_shell == "powershell.exe":
                 import base64
@@ -488,8 +517,8 @@ class SSHBackend(Backend):
                     result["hint"] = mkdir["hint"]
                 return result
 
-        target = self._targets.get(name, {})
-        input_encoding = target.get("input_encoding", "utf-8")
+        target = self._targets.get(name)
+        input_encoding = target.input_encoding if target is not None else "utf-8"
         if input_encoding and input_encoding.lower() not in ("utf-8", "utf8"):
             content = content.decode("utf-8").encode(input_encoding, errors="replace")
 

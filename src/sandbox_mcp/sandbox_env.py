@@ -582,7 +582,14 @@ class SandboxEnv:
 
     def _op_list_targets(self, params):
         cfg = _load_config()
-        targets = {name: {**target, "backend": "ssh"} for name, target in cfg.ssh.targets.items()}
+        # ``target`` is now a frozen SSHTarget dataclass (post-validation
+        # schema); flatten it back to a JSON-friendly dict for the wire.
+        import dataclasses as _dc
+
+        targets = {
+            name: {**_dc.asdict(target), "backend": "ssh"}
+            for name, target in cfg.ssh.targets.items()
+        }
         return {"targets": targets}
 
     # ---- general ----
@@ -893,7 +900,22 @@ class SandboxEnv:
         cfg = _load_config()
         target = cfg.ssh.targets.get(name)
         if target:
-            info = self._machines.register(name, self._ssh, **target)
+            import dataclasses as _dc
+
+            # ``target`` is a frozen SSHTarget dataclass; flatten to
+            # scalar kwargs so ``register`` / ``backend.create`` see the
+            # same field names they used to take from the TOML dict.
+            # Strip None defaults and ``purpose`` (already a separate
+            # register kwarg) to avoid multiple-value collisions.
+            target_kwargs = {
+                k: v for k, v in _dc.asdict(target).items() if v is not None and k != "purpose"
+            }
+            info = self._machines.register(
+                name,
+                self._ssh,
+                purpose=target.purpose,
+                **target_kwargs,
+            )
             result = {"name": info.name, "status": info.status, "backend": "ssh"}
             if info.error:
                 result["error"] = info.error

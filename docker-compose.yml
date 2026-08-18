@@ -23,6 +23,12 @@
 #                                                # in config.toml; required for
 #                                                # docker_build (SDK tar-walks the
 #                                                # context inside this container)
+#        SSH_KEYS_DIR=$HOME/.ssh                  # host dir with your SSH keys;
+#                                                # mounted ro at
+#                                                # /home/sandbox/.ssh_keys/ inside
+#                                                # the container. Set this to a
+#                                                # sandbox-only dir if your real
+#                                                # ~/.ssh/ contains high-value keys.
 #        EOF
 #
 #   4. Start the service:
@@ -89,6 +95,23 @@ services:
 
       # Config directory: auth_tokens, config.toml, audit.log
       - ./config:/home/sandbox/.sandbox-mcp
+
+      # SSH key directory: mount the operator's key directory from the
+      # host into a fixed container path (read-only).  The container
+      # sees keys at /home/sandbox/.ssh_keys/<file>, regardless of
+      # where they live on the host.  config.toml [ssh.targets.*].key
+      # references the container path so the project stays portable.
+      #
+      # Override SSH_KEYS_DIR in .env to point at the operator's own
+      # key location (defaults to ~/.ssh so most setups Just Work).
+      # To scope tighter (avoid exposing unrelated keys), point it at
+      # a dedicated dir holding only the keys used by sandbox-mcp.
+      #
+      # SECURITY: anything readable inside SSH_KEYS_DIR is readable by
+      # the sandbox-mcp process.  Set SSH_KEYS_DIR to a sandbox-only
+      # directory if your ~/.ssh/ contains high-value keys you don't
+      # want this container to see.
+      - "${SSH_KEYS_DIR:-~/.ssh}:/home/sandbox/.ssh_keys:ro"
 
       # work_home: required for docker_build (SDK client tar-walks the
       # build context).  See "Workspace path note" above for the why.
